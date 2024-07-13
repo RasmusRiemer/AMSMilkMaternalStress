@@ -1,0 +1,2776 @@
+---
+title: "16S analysis AMS stress and mothers milk"
+author: "Rasmus Riemer Jakobsen"
+date: "`r Sys.time()`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: '3'
+link-citations: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r}
+#Load packages
+source("package_load_install.R")
+
+#Coulour pallettes
+# col_fil <- pal_jco("default")(10)
+# col_scale <- scale_color_jco()
+col_fil <- brewer.pal(10, "Dark2")#pal_jco("default")(10)
+
+col_scale <- scale_fill_distiller(palette = "Dark2")
+
+theme_set(theme_classic(base_family = "sans")) #sans = TT Arial, mono = TT courier new, serif = TT Times new roman  
+
+source("utils.R")
+
+#Load phyloseq objects
+
+ps.cur <- readRDS("ps.2020_05_AMS.2020-03-31.curated.RDS")
+ps.cur
+ps<-ps.cur
+
+ asv_label <- function(ps, species=T, collapse_species=2){
+  if (species==T){ps@tax_table[,"Species"][lapply(strsplit(ps@tax_table[,7],"/"), length)>collapse_species] <- "Ambigous"}
+  label=taxa_names(ps)
+  label[!is.na(ps@tax_table[,1])] <- paste0("k_",ps@tax_table[,1])[!is.na(ps@tax_table[,1])]
+  label[!is.na(ps@tax_table[,2])] <- paste0("p_",ps@tax_table[,2])[!is.na(ps@tax_table[,2])]
+  label[!is.na(ps@tax_table[,3])] <- paste0("c_",ps@tax_table[,3])[!is.na(ps@tax_table[,3])]
+  label[!is.na(ps@tax_table[,4])] <- paste0("o_",ps@tax_table[,4])[!is.na(ps@tax_table[,4])]
+  label[!is.na(ps@tax_table[,5])] <- paste0("f_",ps@tax_table[,5])[!is.na(ps@tax_table[,5])]
+  label[!is.na(ps@tax_table[,6])] <- paste0("g_",ps@tax_table[,6])[!is.na(ps@tax_table[,6])]
+  if (species==T){
+    label[!is.na(ps@tax_table[,7])] <- paste0("s_",ps@tax_table[,6],"_", ps@tax_table[,7])[!is.na(ps@tax_table[,7])]}
+  label <- make.unique(label)
+  return(label)
+}
+
+taxa_names(ps.cur) <- asv_label(ps.cur)
+
+#Rename ambigous species names
+rename_entries <- function(x) {
+  if_else(str_count(x, "/") > 1, "Ambigous", x)
+}
+
+taxa.names <- taxa_names(ps.cur)
+
+tax.nonamb <- ps.cur@tax_table %>% as.data.frame() %>% mutate(across(Species, rename_entries))
+
+row.names(tax.nonamb) <- taxa.names
+head(tax.nonamb)
+
+tax_table(ps.cur) <- as(tax.nonamb,"matrix")
+
+#Use curated, ASV relabbeled OTU table for analysis
+PSB <- ps.cur
+```
+
+# Pre-processing
+
+## Merge metadata
+
+Only run for original non-randomized metadata
+
+```{r, message=FALSE, warning = F}
+meta.microbiome <- readxl::read_xlsx("1. Metadata - Microbiome Excel characteristics.xlsx")
+meta.24hfood <- readxl::read_xlsx("3. Metadata - Microbiome Excel 24h food intake.xlsx")
+meta.cortisol <- readxl::read_xlsx("Cortisol_variabelen_microbiome.xlsx")
+#meta.ffqfood <- readxl::read_xlsx("4. Metadata - Microbiome Excel FFQ food intake.xlsx")
+meta.outcomes <- readxl::read_xlsx("Infant outcomes.xlsx") %>% dplyr::rename(AMS_ID = Subject_ID)
+
+
+meta.dat <- data.frame(sample_data(PSB))
+meta.dat$ID <- meta.dat$Ext_ID
+
+meta <- dplyr::left_join(meta.dat,meta.microbiome,by="ID")
+meta <- dplyr::left_join(meta,meta.cortisol,by="ID")
+meta <- dplyr::left_join(meta,meta.24hfood,by="ID")
+
+meta <- meta %>% tidyr::separate_wider_regex(Int_ID, c(AMS_ID = ".*", "_", Timecode = ".*"),cols_remove=FALSE)#Split internal id to separate id and timepint code
+
+meta <- dplyr::left_join(meta,meta.outcomes,by="AMS_ID",keep=FALSE) #Do not keep non-matched IDs as these are for excluded infants
+#meta <- dplyr::left_join(meta,meta.ffqfood,by="ID")
+
+meta <- type.convert(meta) %>% as.data.frame()
+
+rownames(meta) <- rownames(meta.dat)
+
+sample_data(PSB) <- meta
+
+saveRDS(PSB,"AMS_phyloseq.RDS")
+```
+
+All metadata columns:
+
+```{r}
+sort(colnames(meta))
+```
+
+## Load randomized metadat
+
+```{r}
+PSB <- readRDS("AMS_phyloseq.RDS")
+#readRDS("AMS_phyloseq_randomized.RDS")
+```
+
+
+## Remove ASV fasta sequence column
+
+```{r, message = F}
+PSB@tax_table <- tax_table(PSB)[,1:7]
+```
+
+# Format metadata
+
+## Format stress group column
+
+```{r, eval = T, include = F, echo = F, message = F}
+PSB@sam_data$Study_group <- as.factor(PSB@sam_data$Study_group)
+
+PSB@sam_data$Stress_group <- PSB@sam_data$Study_group %>% recode("1"="Control","2"="Stress")
+
+PSB@sam_data$Day <- PSB@sam_data$Timepoint %>% recode("p10"="Day 10","p24"="Day 24")
+```
+
+## Rename gender to sex
+
+```{r, eval = T, include = F, echo = F, message = F}
+PSB@sam_data$Sex_child <- PSB@sam_data$Gender_child
+```
+
+## Calculate WHZ scores - not done yet
+
+```{r, eval = F}
+
+
+meta.dat$`Weight month 1` <- as.numeric(meta.dat$`Weight month 1`)
+meta.dat$`Weight month 6` <- as.numeric(meta.dat$`Weight month 6`)
+
+meta.dat$`Height month 1` <- as.numeric(meta.dat$`Height month 1`)
+meta.dat$`Height month 6` <- as.numeric(meta.dat$`Height month 6`)
+
+meta.dat$`30days` <- 30
+meta.dat$`180days` <- 180
+
+svy <- addWGSR(data = anthro3, sex = "sex", firstPart = "weight",
+               secondPart = "height", index = "wfh")
+# Weight for height
+meta.dat <- addWGSR(data = meta.dat, sex = "Infant sex", firstPart = "Weight month 1",
+               secondPart = "Height month 1", index = "wfl", output = "whz.1m")
+
+meta.dat <- addWGSR(data = meta.dat, sex = "Infant sex", firstPart = "Weight month 6",
+               secondPart = "Height month 6", index = "wfl", output = "whz.6m")
+
+meta.dat$delta.whz <- meta.dat$whz.6m - meta.dat$whz.1m
+
+# Height for age
+meta.dat <- addWGSR(data = meta.dat, sex = "Infant sex", firstPart = "Height month 1",
+               secondPart = 'Sample_age(1MO)', index = "lfa", output = "haz.1m")
+
+meta.dat <- addWGSR(data = meta.dat, sex = "Infant sex", firstPart = "Height month 6",
+               secondPart = '180days', index = "lfa", output = "haz.6m")
+
+meta.dat$delta.haz <- meta.dat$haz.6m - meta.dat$haz.1m
+
+#Weight for age
+
+meta.dat <- addWGSR(data = meta.dat, sex = "Infant sex", firstPart = "Weight month 1",
+               secondPart = 'Sample_age(1MO)', index = "lfa", output = "waz.1m")
+
+meta.dat <- addWGSR(data = meta.dat, sex = "Infant sex", firstPart = "Weight month 6",
+               secondPart = '180days', index = "lfa", output = "waz.6m")
+
+meta.dat$delta.waz <- meta.dat$waz.6m - meta.dat$waz.1m
+```
+
+
+## Define key variables
+
+```{r}
+#colnames(meta.outcomes)
+
+key.vars <- c("Stress_group",
+           "Sex_child",
+           "PSS_stress_score",
+           "LSCr_stress_score",
+           "Education_mother",
+           "BMI_mother",
+           "Timepoint"
+           # "Hair cortisol",
+           # "HM_cortisol_AUC_1",
+           #"Saliva_cortisol_morning_peak"
+                      )
+
+key.vars.inf <- c("Infant_temp_NEG",
+           "Infant_temp_REG",
+           "Infant_temp_SUR",
+           "Infant_weight_w2",
+           "Infant_weight_3m",
+           "Timepoint"
+)
+
+key.vars.cortisol <- c("Hair cortisol",
+           "HM_cortisol_AUC_1",
+           "HM_cortisol_AUC_2",
+           # "HM_cortisol_morning_peak_1",
+           # "HM_cortisol_morning_peak_2",
+           "Saliva_cortisol_morning_peak",
+           "Timepoint"
+)
+```
+
+
+```{r}
+meta <- sample_data(PSB) %>% unclass() %>% as.data.frame()
+```
+
+# Filtering
+
+## Remove low-abundance ASVs
+
+Remove taxa not seen found in at least 3 samples with a total count of minimum 1000 reads. This protects against an OTU with small mean & trivially large C.V.
+
+```{r, message = F, eval = T}
+prev <- 3/nrow(PSB@sam_data)
+PSB.fil = metagMisc::phyloseq_filter_prevalence(PSB, prev.trh = prev, abund.trh = 500, abund.type = "total", threshold_condition = "AND")
+
+spec <- specnumber(as.matrix(otu_table(PSB.fil))) %>% sort(decreasing=FALSE)
+head(spec)
+
+sum(sample_sums(PSB.fil))/sum(sample_sums(PSB))
+
+PSB <- PSB.fil
+
+```
+
+97.5% of reads were kept after filtering, but number of taxa reduced from 2063 to 250
+            
+## CSS normalization
+
+```{r, eval = T, include = F, echo = F, message = F}
+
+PSB.CSS <- metagMisc::phyloseq_transform_css(PSB)
+```
+
+# Save objects
+
+```{r}
+meta <- PSB@sam_data %>% as.data.frame()
+
+save(list=c("PSB","PSB.CSS","meta","key.vars","key.vars.inf","key.vars.cortisol"),
+    file = "Curated_AMS.RData"
+    )
+```
+
+
+Read count per sample
+
+```{r, eval = T, include = T, echo = F, message = F}
+as.table(sample_sums(PSB))
+
+```
+
+# Barplots
+
+## All samples
+
+### Genus
+
+Samples look quite similar in compostion, apart from sample 37281 and 37291. 377281 had very low observed ASV count, so it is removed.
+
+```{r, eval = T, include = T, echo = F, message = F}
+
+bac.phyl.genus <- tax_glom(PSB, "Genus", NArm = FALSE)
+
+ps0 <- transform_sample_counts(bac.phyl.genus, function(x) x / sum(x))
+
+#ps1<- merge_samples(ps0, "Time")
+
+#ps1 <- transform_sample_counts(ps0, function(x) x / sum(x))
+
+
+#Create melted dataframe
+df <- psmelt(ps0)
+
+#Select last non-empty taxonomic rank
+df[df==""] <- NA
+
+df$tax <- apply(df, 1, function(x) tail(na.omit(x), 1))
+
+#Arrange samples by mean abundance
+top <- df %>%
+  group_by(tax) %>%
+  dplyr::summarize(Mean = mean(Abundance)) %>%
+  arrange(-Mean)
+#Show top
+#top
+
+top10 <- top$tax[1:10]
+df0 <- df %>%
+  mutate(tax = fct_other(tax, c(as.matrix(top10))))
+
+df0 <- df0[order(df0$Sample, decreasing = TRUE), ]
+
+#Set order for samples
+#df0$Treatment <- factor(df0$Treatment, levels = c("Control", "Amp", "FOP", "LM", "LM+Amp", "LM+FOP"))
+
+#Set Hours as factor
+#$Hours <- factor(df0$Hours, levels = c("3h", "6h", "24h"))
+
+#Order by abundance most common taxa
+
+#df0$D.ID <- as.factor(order.dat$D.ID)
+order <- subset(df0, tax == top$tax[1]) %>% arrange(-Abundance)
+df0$ID <- factor(df0$ID,levels = order$ID )
+
+
+df0$tax <- forcats::fct_reorder(df0$tax, df0$Abundance, .fun = mean)
+labels = levels(df0$tax)
+labels[labels != "Other"] <- paste0("*", labels[labels != "Other"], "*")
+bar.fill <- c("grey",rep(col_fil,5)[1:length(levels(df0$tax))-1]) # Set grey as last color = Other
+
+barplot.all.samples <- ggplot(df0, aes(x = ID,
+                                       y = Abundance,
+                                       fill = fct_reorder(tax, Abundance, .fun = mean))) + 
+  geom_col(width = 0.8) +
+  scale_fill_jco(name = "Taxonomy") +
+  scale_fill_manual(values=bar.fill,name="Genus",labels=labels)+
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.ticks=element_line(size=1, colour = "Black"),
+        strip.background = element_rect(colour = "white", fill = "white"),
+        strip.text.x = element_text(angle = 0, face = "bold"),
+        legend.text = element_markdown(),
+  ) +
+  ylab("Relative abundance")
+
+
+barplot.all.samples
+
+# extract the legend from one of the plots
+legend.barplot.all <- get_legend(
+  # create some space to the left of the legend
+  barplot.all.samples + theme(legend.box.margin = margin(0, 0, 0, 12))
+)
+
+```
+
+### Phylum
+
+```{r, eval = T, include = T, echo = F, message = F}
+
+bac.phyl.family <- tax_glom(PSB, "Phylum", NArm = FALSE)
+
+ps0 <- transform_sample_counts(bac.phyl.family, function(x) x / sum(x))
+
+
+#Create melted dataframe
+df <- psmelt(ps0)
+
+#Select last non-empty taxonomic rank
+df[df==""] <- NA
+
+df$tax <- apply(df, 1, function(x) tail(na.omit(x), 1))
+
+#Arrange samples by mean abundance
+top <- df %>%
+  group_by(tax) %>%
+  dplyr::summarize(Mean = mean(Abundance)) %>%
+  arrange(-Mean)
+#Show top
+#top
+
+top10 <- top$tax[1:10]
+df0 <- df %>%
+  mutate(tax = fct_other(tax, c(as.matrix(top10))))
+
+df0 <- df0[order(df0$Sample, decreasing = TRUE), ]
+
+#Set phylum for samples
+#df0$Treatment <- factor(df0$Treatment, levels = c("Control", "Amp", "FOP", "LM", "LM+Amp", "LM+FOP"))
+
+#Set Hours as factor
+#$Hours <- factor(df0$Hours, levels = c("3h", "6h", "24h"))
+
+#phylum by abundance most common taxa
+
+#df0$D.ID <- as.factor(phylum.dat$D.ID)
+phylum <- subset(df0, tax == top$tax[1]) %>% arrange(-Abundance)
+df0$ID <- factor(df0$ID,levels = phylum$ID )
+
+barplot.all.phylum <- ggplot(df0, aes(x = ID,
+                                       y = Abundance,
+                                       fill = fct_reorder(tax, Abundance, .fun = mean))) + 
+  geom_col(width = 0.8) +
+  scale_fill_jco(name = "Taxonomy") +
+  scale_fill_manual(values=rep(col_fil,5),name="Phylum")+
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.ticks=element_line(size=1, colour = "Black"),
+        strip.background = element_rect(colour = "white", fill = "white"),
+        strip.text.x = element_text(angle = 0, face = "bold"),
+        #legend.text = element_text(face = "italic")
+        #legend.position = "none"
+  ) +
+  ylab("Relative abundance")
+
+
+barplot.all.phylum
+```
+
+## By stress group
+
+```{r, eval = T, include = T, echo = F, message = F,warning=F}
+#bac.phyl <- tax_glom(PSB, "Genus", NArm = FALSE)
+
+ps0 <- transform_sample_counts(bac.phyl.genus, function(x) x / sum(x))
+
+ps1<- phyloseq::merge_samples(ps0, "Stress_group")
+
+ps1 <- transform_sample_counts(ps1, function(x) x / sum(x))
+
+
+#Create melted dataframe
+df <- psmelt(ps1)
+
+#Select last non-empty taxonomic rank
+df[df==""] <- NA
+
+df$tax <- apply(df, 1, function(x) tail(na.omit(x), 1))
+
+#Arrange samples by mean abundance
+top <- df %>%
+  group_by(tax) %>%
+  dplyr::summarize(Mean = mean(Abundance)) %>%
+  arrange(-Mean)
+#Show top
+#top
+
+top10 <- top$tax[1:10]
+df0 <- df %>%
+  mutate(tax = fct_other(tax, c(as.matrix(top10))))
+
+df0 <- df0[order(df0$Sample, decreasing = TRUE), ]
+
+#Set order for samples
+#df0$Treatment <- factor(df0$Treatment, levels = c("Control", "Amp", "FOP", "LM", "LM+Amp", "LM+FOP"))
+
+#Set Hours as factor
+#$Hours <- factor(df0$Hours, levels = c("3h", "6h", "24h"))
+
+#Order by abundance most common taxa
+
+#df0$D.ID <- as.factor(order.dat$D.ID)
+
+df0$tax <- forcats::fct_reorder(df0$tax, df0$Abundance, .fun = mean)
+labels = levels(df0$tax)
+labels[labels != "Other"] <- paste0("*", labels[labels != "Other"], "*")
+bar.fill <- c("grey",rep(col_fil,5)[1:length(levels(df0$tax))-1]) # Set grey as last color = Other
+
+barplot.group <- ggplot(df0, aes(Sample, Abundance, fill = fct_reorder(tax, Abundance, .fun = mean))) + 
+  geom_col(width = 0.8) +
+  scale_fill_jco(name = "Taxonomy") +
+  scale_fill_manual(values=bar.fill,name="Genus")+
+  theme_classic() +
+  theme(strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x=element_text(angle = 45, hjust = 1),
+        strip.text.x = element_text(angle = 0, face = "bold"),
+        axis.title.x=element_blank()
+        #legend.position = "none"
+  ) +
+  ylab("Relative abundance")
+
+
+barplot.group
+
+```
+
+## By time point
+
+```{r, eval = T, include = T, echo = F, message = F,warning=F}
+# bac.phyl <- tax_glom(PSB, "Genus", NArm = FALSE)
+
+ps0 <- transform_sample_counts(bac.phyl.genus, function(x) x / sum(x))
+
+ps1<- merge_samples(ps0, "Day")
+
+ps1 <- transform_sample_counts(ps1, function(x) x / sum(x))
+
+
+#Create melted dataframe
+df <- psmelt(ps1)
+
+#Select last non-empty taxonomic rank
+df[df==""] <- NA
+
+df$tax <- apply(df, 1, function(x) tail(na.omit(x), 1))
+
+#Arrange samples by mean abundance
+top <- df %>%
+  group_by(tax) %>%
+  dplyr::summarize(Mean = mean(Abundance)) %>%
+  arrange(-Mean)
+#Show top
+#top
+
+top10 <- top$tax[1:10]
+df0 <- df %>%
+  mutate(tax = fct_other(tax, c(as.matrix(top10))))
+
+df0 <- df0[order(df0$Sample, decreasing = TRUE), ]
+
+#Set order for samples
+#df0$Treatment <- factor(df0$Treatment, levels = c("Control", "Amp", "FOP", "LM", "LM+Amp", "LM+FOP"))
+
+#Set Hours as factor
+#$Hours <- factor(df0$Hours, levels = c("3h", "6h", "24h"))
+
+#Order by abundance most common taxa
+
+#df0$D.ID <- as.factor(order.dat$D.ID)
+
+bar.fill <- c("grey",rep(col_fil,5)[1:length(levels(df0$tax))-1]) # Set grey as last color = Other
+
+barplot.days <- ggplot(df0, aes(Sample, Abundance, fill = fct_reorder(tax, Abundance, .fun = mean))) + 
+  geom_col(width = 0.8) +
+  scale_fill_jco(name = "Taxonomy") +
+  scale_fill_manual(values=bar.fill,name="Genus")+
+  theme_classic() +
+  theme(strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x=element_text(angle = 45, hjust = 1),
+        strip.text.x = element_text(angle = 0, face = "bold"),
+        axis.title.x=element_blank()
+        #legend.position = "none"
+  ) +
+  ylab("Relative abundance")
+
+
+barplot.days
+```
+
+## By Stess and time point
+
+### Genus
+
+```{r, eval = T, include = T, echo = F, message = F,warning=F}
+bac.phyl.genus@sam_data$Stress_time <- paste0(PSB@sam_data$Stress_group," ",PSB@sam_data$Day)
+
+#bac.phyl <- tax_glom(PSB, "Genus", NArm = FALSE)
+
+ps0 <- transform_sample_counts(bac.phyl.genus, function(x) x / sum(x))
+
+ps1<- merge_samples(ps0, "Stress_time")
+
+ps1 <- transform_sample_counts(ps1, function(x) x / sum(x))
+
+
+#Create melted dataframe
+df <- psmelt(ps1)
+
+#Select last non-empty taxonomic rank
+df[df==""] <- NA
+
+df$tax <- apply(df, 1, function(x) tail(na.omit(x), 1))
+
+#Arrange samples by mean abundance
+top <- df %>%
+  group_by(tax) %>%
+  dplyr::summarize(Mean = mean(Abundance)) %>%
+  arrange(-Mean)
+#Show top
+#top
+
+top10 <- top$tax[1:10]
+df0 <- df %>%
+  mutate(tax = fct_other(tax, c(as.matrix(top10))))
+
+df0 <- df0[order(df0$Sample, decreasing = TRUE), ]
+
+#Set order for samples
+#df0$Treatment <- factor(df0$Treatment, levels = c("Control", "Amp", "FOP", "LM", "LM+Amp", "LM+FOP"))
+
+#Set Hours as factor
+#$Hours <- factor(df0$Hours, levels = c("3h", "6h", "24h"))
+
+#Order by abundance most common taxa
+
+#df0$D.ID <- as.factor(order.dat$D.ID)
+
+df0$tax <- forcats::fct_reorder(df0$tax, df0$Abundance, .fun = mean)
+labels = levels(df0$tax)
+labels[labels != "Other"] <- paste0("*", labels[labels != "Other"], "*")
+bar.fill <- c("grey",rep(col_fil,5)[1:length(levels(df0$tax))-1]) # Set grey as last color = Other
+
+barplot.stress.time.genus <- ggplot(df0, aes(Sample, Abundance, fill = forcats::fct_reorder(tax, Abundance, .fun = mean))) + 
+  geom_col(width = 0.8) +
+  scale_fill_manual(values=bar.fill,name="Genus",labels = labels)+
+  theme_classic() +
+  theme(axis.line=element_line(size=0.5),
+        #panel.border = element_blank(),
+        axis.title.x=element_blank(),
+        strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x=element_text(angle = 45, hjust = 1),
+        strip.text.x = element_text(angle = 0, face = "bold"),
+        legend.text = ggtext::element_markdown()
+        #legend.position = "none"
+  ) +
+  ylab("Relative abundance")
+
+
+barplot.stress.time.genus
+
+```
+### Phylum
+
+```{r, eval = T, include = T, echo = F, message = F,warning=F}
+bac.phyl.phylum <- tax_glom(PSB, "Phylum", NArm = FALSE)
+
+bac.phyl.phylum@sam_data$Stress_time <- paste0(bac.phyl.phylum@sam_data$Stress_group," ",PSB@sam_data$Day)
+
+ps0 <- transform_sample_counts(bac.phyl.phylum, function(x) x / sum(x))
+
+ps1<- merge_samples(ps0, "Stress_time")
+
+ps1 <- transform_sample_counts(ps1, function(x) x / sum(x))
+
+
+#Create melted dataframe
+df <- psmelt(ps1)
+
+#Select last non-empty taxonomic rank
+df[df==""] <- NA
+
+df$tax <- apply(df, 1, function(x) tail(na.omit(x), 1))
+
+#Arrange samples by mean abundance
+top <- df %>%
+  group_by(tax) %>%
+  dplyr::summarize(Mean = mean(Abundance)) %>%
+  arrange(-Mean)
+#Show top
+#top
+
+top10 <- top$tax[1:10]
+df0 <- df %>%
+  mutate(tax = fct_other(tax, c(as.matrix(top10))))
+
+df0 <- df0[order(df0$Sample, decreasing = TRUE), ]
+
+#Set order for samples
+#df0$Treatment <- factor(df0$Treatment, levels = c("Control", "Amp", "FOP", "LM", "LM+Amp", "LM+FOP"))
+
+#Set Hours as factor
+#$Hours <- factor(df0$Hours, levels = c("3h", "6h", "24h"))
+
+#Order by abundance most common taxa
+
+#df0$D.ID <- as.factor(order.dat$D.ID)
+
+barplot.stress.time.genus <- ggplot(df0, aes(Sample, Abundance, fill = fct_reorder(tax, Abundance, .fun = mean))) + 
+  geom_col(width = 0.8) +
+  scale_fill_jco(name = "Taxonomy") +
+  scale_fill_manual(values=rep(col_fil,5),name="Phylum")+
+  theme_classic() +
+  theme(axis.line=element_line(size=0.5),
+        #panel.border = element_blank(),
+        axis.title.x=element_blank(),
+        strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x=element_text(angle = 45, hjust = 1),
+        strip.text.x = element_text(angle = 0, face = "bold"),
+        #legend.position = "none"
+  ) +
+  ylab("Relative abundance")
+
+
+barplot.stress.time.genus
+
+```
+
+# Relative abundance violin plot
+
+## Stress group
+
+```{r, message = F}
+#remotes::install_github("jstokholm/rabuplot")
+library(rabuplot)
+
+rabu.group <- rabuplot(
+  PSB,
+  violin = TRUE,
+  predictor = "Stress_group",
+  p_adjust = TRUE,
+  p_stars = TRUE,
+  italic_names = FALSE,
+  colors = col_fil[1:2],
+  text_angle_x = 45)
+
+rabu <- rabu.group + 
+   guides(fill=guide_legend("Stress group")) 
+
+labels <- levels(factor(rabu$data$variable))
+labels[labels != "Other genus"] <- paste0("*", labels[labels != "Other genus"], "*")
+
+rabu.group <- rabu + scale_x_discrete(labels = labels) + theme(axis.text.y = ggtext::element_markdown())
+
+rabu.group
+```
+
+### Species
+
+```{r, message = F}
+#remotes::install_github("jstokholm/rabuplot")
+library(rabuplot)
+
+rabu.group.species <- rabuplot(
+  PSB,
+  violin = TRUE, predictor = "Stress_group", p_adjust = TRUE, p_stars = TRUE ,colors = col_fil[1:2],type="Species")
+
+rabu.group.species
+```
+
+## Time
+
+```{r, message = F}
+rabu.time <- rabuplot(
+  PSB,
+  violin = TRUE, predictor = "Day", p_adjust = TRUE, p_stars = TRUE ,colors = col_fil[1:2])
+
+rabu.time
+```
+
+## Study group over time
+
+```{r, message = F}
+rabu <- rabuplot(
+  PSB,
+  violin = TRUE,
+  predictor = "Stress_group",
+  facet_wrap = "Day",
+  p_adjust = TRUE,
+  p_stars = TRUE,
+  italic_names = FALSE,
+  colors = col_fil[1:2]) + 
+  guides(fill=guide_legend("Stress group")) +
+  ggtitle("")
+
+labels <- levels(factor(rabu$data$variable))
+labels[labels != "Other genus"] <- paste0("*", labels[labels != "Other genus"], "*")
+
+rabu.group.time <- rabu + scale_x_discrete(labels = labels) + theme(axis.text.y = ggtext::element_markdown())
+
+rabu.group.time
+```
+
+# Alpha diversity
+
+## Stress group
+
+```{r, eval = T, include = T, echo = F, message = F, warning=FALSE}
+
+#Normalize to mean read count
+standf = function(x, t=total) round(t * (x / sum(x)))
+total = median(sample_sums(PSB))
+PSB.R = transform_sample_counts(PSB, standf)
+
+#Set desired alpha diversity metrics
+
+alpha_met <- c("Observed", "Shannon", "InvSimpson")
+
+###########Boxplots
+
+##Time
+
+var <- c("Stress_group")
+
+annotations <- data.frame(
+  variable = alpha_met,
+  Label = c("NS"),
+  y = c(110, 3.2, 13)  # Positions should be adjusted based on your data's y-axis scales
+)
+
+
+alpha.group <- plot_richness(PSB.R, measures=alpha_met , x=var, color=var) + 
+  geom_boxplot(alpha=0.1, lwd = 1) +
+  scale_color_manual(values = col_fil,"Stress group") +
+  theme_classic() +
+  theme(strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x=element_text(angle = 45, hjust = 1),
+        strip.text.x = element_text(angle = 0)
+  ) +
+  labs(x="",
+       y="Alpha diversity") +
+  geom_text(data = annotations, aes(x = 1.5, y = y, label = Label), inherit.aes = FALSE)
+
+alpha.group
+```
+
+Anova
+
+```{r, eval = T, include = T, echo = F, warning = F}
+##Richness - all time points
+
+richness = estimate_richness(PSB.R, measures = alpha_met)
+
+#Time
+
+rich <- cbind(richness, variable = sample_data(PSB.R)$Stress_group)
+
+TukeyHSD(aov(Shannon ~ variable, rich))
+```
+
+## Time
+
+```{r, eval = T, include = T, echo = F, warning=F}
+###########Boxplots
+
+##Time
+
+variable <- c("Day")
+
+annotations <- data.frame(
+  variable = alpha_met,
+  Label = c("NS"),
+  y = c(110, 3.2, 13)  # Positions should be adjusted based on your data's y-axis scales
+)
+
+alpha.days <- plot_richness(PSB.R, measures=alpha_met , x=variable, color=variable) + 
+  geom_boxplot(alpha=0.1, lwd = 1) +
+  scale_color_manual(values = col_fil,"") +
+  theme_classic() +
+  theme(text = element_text(size = 8),
+        axis.line=element_line(size=1),
+        axis.text=element_text(size = 8, colour = "Black"),
+        axis.ticks=element_line(size=1, colour = "Black"),
+        strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x=element_text(angle = 45, hjust = 1),
+        strip.text.x = element_text(size = 8, angle = 0),
+        legend.position = "none"
+  ) +
+  labs(x="Timepoint",
+       y="Alpha diversity") +
+  geom_text(data = annotations, aes(x = 1.5, y = y, label = Label), inherit.aes = FALSE)
+
+alpha.days
+```
+Anova
+
+```{r, eval = T, include = T, echo = F, warning=F}
+#Trunk
+
+rich <- cbind(richness, variable = sample_data(PSB.R)$Timepoint)
+
+TukeyHSD(aov(Shannon ~ variable, rich))
+```
+
+# Beta diversity
+
+## Group
+
+```{r, eval = T, include = T, echo = F, massage = F}
+#Do PCoA ordination based on Bray-curtis distance
+GP.ord <- ordinate(PSB.CSS, "PCoA", "bray")
+
+#####################Run + Batch
+
+#PSB.CSS@sam_data$Run <- as.factor(PSB.CSS@sam_data$Run)
+
+beta.stress = plot_ordination(PSB.CSS, GP.ord, color="Stress_group") + 
+  stat_ellipse(geom = "polygon", level = 0.95, fill = NA, size = 1) +
+  #scale_fill_manual(values= col_fil) +
+  scale_color_manual(values = col_fil,"Stress group") +
+  theme_classic() + 
+  theme(plot.title = element_text(size = 12, face = "bold",hjust = 0.5),
+        strip.background = element_blank(),
+        strip.text.x = element_blank()
+  ) + 
+  #geom_point(aes(shape = C.section..Yes.No.), size = 3) +
+  scale_x_reverse() +# Revert x-axis to match plots
+  #geom_dl(aes(label = D.ID), method = list(dl.trans(x = x + 0.0), "last.points", cex = 0.8))
+  ggplot2::annotate("text", x = -0.33, y = 0.38, label = "P = 0.005") #Add p-value from adonis
+
+beta.stress
+```
+Permanova statistics
+
+```{r, eval = T, include = T, echo = F, message = F}
+PSB.CSS.no.na <- subset_samples(PSB.CSS, !is.na(Stress_group))
+
+D_BC <- phyloseq::distance(PSB.CSS.no.na, "bray")
+
+adonis <- adonis2(D_BC ~ Stress_group, data = data.frame(sample_data(PSB.CSS.no.na)))
+adonis
+```
+
+## Timepoint
+
+```{r, eval = T, include = T, echo = F, massage = F}
+#Do PCoA ordination based on Bray-curtis distance
+GP.ord <- ordinate(PSB.CSS, "PCoA", "bray")
+
+#####################Run + Batch
+
+#PSB.CSS@sam_data$Run <- as.factor(PSB.CSS@sam_data$Run)
+
+beta.days = plot_ordination(PSB.CSS, GP.ord, color="Day") + 
+  stat_ellipse(geom = "polygon", level = 0.95, fill = NA, size = 1) +
+  #scale_fill_manual(values= col_fil) +
+  scale_color_manual(values = col_fil[3:4]) +
+  theme_classic() + 
+  theme(plot.title = element_text(size = 12, face = "bold",hjust = 0.5),
+        strip.background = element_blank(),
+        strip.text.x = element_blank()
+  ) + 
+  #geom_point(aes(shape = C.section..Yes.No.), size = 3) +
+  scale_x_reverse() +# Revert x-axis to match plots
+  #ggtitle("Timepoint") +
+  ggplot2::annotate("text", x = -0.3, y = 0.3, label = "P = NS") #Add p-value from adonis
+
+beta.days
+```
+
+Permanova statistics
+
+```{r, eval = T, include = T, echo = F, message = F}
+PSB.CSS.no.na <- subset_samples(PSB.CSS, !is.na(Stress_group))
+
+D_BC <- phyloseq::distance(PSB.CSS.no.na, "bray")
+
+adonis <- adonis2(D_BC ~ Timepoint, data = data.frame(sample_data(PSB.CSS.no.na)))
+adonis
+```
+
+## Stress split by time
+
+```{r, eval = T, include = T, echo = F, message = F}
+beta.stress.day <- plot_ordination(PSB.CSS, GP.ord, color="Stress_group") + 
+  stat_ellipse(geom = "polygon", level = 0.95, fill = NA, size = 1) +
+  scale_color_manual(values = col_fil) +
+  theme_classic() + 
+  theme(strip.background = element_blank(),
+        strip.text.x = element_text(size = 10,face = "bold")
+  ) + 
+  #geom_point(aes(shape = C.section..Yes.No.), size = 3) +
+  scale_x_reverse() +# Revert x-axis to match plots
+  facet_wrap("Day") +
+  guides(fill=guide_legend("Stress group"))
+  #ggplot2::annotate("text", x = -0.3, y = 0.3, label = "P = NS") #Add p-value from adonis
+
+beta.stress.day
+```
+
+#Permanova
+
+```{r, eval = T, include = T, echo = F, message = F}
+D_BC <- phyloseq::distance(PSB.CSS, "bray")
+
+adonis <- adonis2(D_BC ~ Timepoint + Stress_group, data = data.frame(sample_data(PSB.CSS)))
+
+adonis
+```
+
+Permanova - time points separately
+
+```{r, eval = T, include = T, echo = F, message = F}
+ps <- subset_samples(PSB.CSS,Day=="Day 10")
+
+D_BC <- phyloseq::distance(
+  ps,
+  "bray")
+
+adonis <- adonis2(D_BC ~ Stress_group, data = data.frame(sample_data(ps)), permutations = 9999)
+
+adonis
+```
+
+```{r, eval = T, include = T, echo = F, message = F}
+ps <- subset_samples(PSB.CSS,Day=="Day 24")
+
+D_BC <- phyloseq::distance(
+  ps,
+  "bray")
+
+adonis <- adonis2(D_BC ~ Stress_group, data = data.frame(sample_data(ps)), permutations = 9999)
+
+adonis
+```
+
+# Differential abundance - Deseq2
+
+## Deseq 2 Mao style
+ 
+### Run deseq2
+
+```{r,warning=F,message=F}
+ps <- PSB
+ps <- tax_glom(ps, "Species", NArm = FALSE) #select a level to compare
+
+
+library(DESeq2)
+  
+  # remove all error taxa
+  ps.ds <- phyloseq_to_deseq2(ps, ~Stress_group + Timepoint)
+  # solve rows without a zero, deseq need to calculate the geometric zero, 
+  cts <- counts(ps.ds)
+  geoMeans <- apply(cts, 1, function(row) if (all(row == 0)) 0 else exp(mean(log(row[row != 0]))))
+  dds <- estimateSizeFactors(ps.ds, geoMeans=geoMeans)
+  ps.ds <-  DESeq2::DESeq(dds, test="Wald", fitType="parametric")
+  # result
+  res = results(ps.ds, cooksCutoff = FALSE)
+  sigtab = res
+  sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(ps)[rownames(sigtab), ], "matrix"))
+  head(sigtab)
+```  
+
+### Volcano
+
+```{r}
+EnhancedVolcano::EnhancedVolcano(sigtab,
+    lab =  sub("^[^_]*_", "", rownames(res)),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    pCutoff = 0.05,
+    FCcutoff = 0.5)
+
+```
+
+### Log-fold change boxplot
+
+```{r,warning=F,message=F}
+
+# Select significant ASVs
+
+tab <- subset(sigtab, padj < 0.05)
+
+OTU <- unique(tab)
+
+##
+ps.rel <- transform_sample_counts(PSB, function(x) x/sum(x)*100)
+ps.rel.sig <- prune_taxa(colnames(otu_table(ps.rel)) %in% rownames(OTU) , ps.rel)
+## at least 1% relative abundance appearance in 1% samples
+mat <- as.matrix(otu_table(ps.rel.sig))
+species2keep <- colnames(mat)[rowSums(mat>=2)/length(colnames(mat))> 0.1]
+species2keep <- species2keep[!is.na(species2keep)]
+sigtab.p.prev <- tab[species2keep,]
+
+sigtabgen = subset(sigtab.p.prev, !is.na(Genus))
+
+# Phylum order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels=names(x))
+# Genus order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels=names(x))
+
+ggplot(sigtabgen, aes(y=Genus, x=log2FoldChange, color=Phylum)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +
+  scale_color_manual(values = col_fil[3:4])
+
+deseq2.log2fold.box <- ggplot(sigtabgen, aes(y=Genus, x=log2FoldChange, color=Family)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5),
+        #plot.margin = margin(2, 0, 0, 0, "cm")
+        ) +
+  scale_color_manual(values = col_fil) +
+  ylab("ASV genus") +
+  ggtitle("\U2190 Controls        HS \U2192")
+
+deseq2.log2fold.box
+```
+
+
+### Heatmap
+  
+```{r,warning=FALSE,message=FALSE}  
+  theme_set(theme_bw())
+  
+  scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+  }
+  
+  
+tab <- subset(sigtab, padj < 0.05)
+
+OTU <- unique(tab)
+
+ps.rel <- transform_sample_counts(ps, function(x) x/sum(x)*100)
+ps.rel.sig <- prune_taxa(colnames(otu_table(ps.rel)) %in% rownames(OTU) , ps.rel)
+
+#select the rel-abun > 0.1%
+
+# at least 1% relative abundance appearance in 5% samples
+mat <- as.matrix(otu_table(ps.rel.sig))
+species2keep <- colnames(mat)[rowSums(mat>=1)/length(colnames(mat))> 0.1]
+species2keep
+ps.rel.sig <- prune_taxa(species2keep,ps.rel.sig)
+
+otu_abun_select <- data.frame(otu_table(ps.rel.sig), check.names = F)
+
+#import relavant metadata
+metadata <- data.frame(sample_data(ps.rel.sig))
+tax.clean <- data.frame(tax_table(ps.rel.sig))
+
+
+# create a variable to define the subgroup
+# order the matrix by the subgroup
+# metadata$Treatment <- factor(metadata$Treatment, levels = groups)
+# meta_order <- metadata[order(metadata$Treatment),]
+
+# # re_order the col
+# mat <- otu_abun_select
+# mat <- as.matrix(mat[,rownames(meta_order)])
+
+base_mean = rowMeans(mat)
+mat_scaled = t(scale(t(mat)))
+
+# calculate heatmap annotation
+tax_heatmap <- tax.clean[colnames(mat_scaled),]
+
+tax_heatmap$sign <- sapply(rownames(tax_heatmap), function(x) ifelse(x %in% rownames(sigtab),"*","ns"))
+
+index <- match(rownames(tax_heatmap), rownames(tab))
+index
+tax_heatmap$p_val <- tab$padj[index]
+
+tax_heatmap <- tax_heatmap[order(tax_heatmap$p_val),]
+
+max(c(-log10(tax_heatmap$p_val)))
+
+
+# my_palette <- c("darkblue", "darkgoldenrod1", "darkseagreen", "darkorchid", "darkolivegreen1", "lightskyblue", "darkgreen",
+#                 "deeppink", "khaki2", "firebrick", "brown1", "darkorange1", "cyan1", "royalblue4", "darksalmon", "darkblue", 
+#                 "royalblue4", "dodgerblue3", "steelblue1", "lightskyblue", "darkseagreen", "darkgoldenrod1", "darkseagreen", 
+#                 "darkorchid", "darkolivegreen1", "brown1", "darkorange1", "cyan1", "darkgrey", "darkblue", "darkgoldenrod1", 
+#                 "darkseagreen", "darkorchid", "darkolivegreen1", "lightskyblue", "darkgreen", "deeppink", "khaki2", 
+#                 "firebrick", "brown1", "darkorange1", "cyan1", "royalblue4", "darksalmon", "darkblue", "royalblue4", 
+#                 "dodgerblue3", "steelblue1", "lightskyblue", "darkseagreen", "darkgoldenrod1", "darkseagreen", "darkorchid", 
+#                 "darkolivegreen1", "brown1", "darkorange1", "cyan1", "darkgrey")
+
+my_palette <- rep(col_fil,5)
+
+# adjust tax_heatmap genus and species, pasteurella
+tax_heatmap$Genus <- as.character(tax_heatmap$Genus)
+tax_heatmap$Species <- as.character(tax_heatmap$Species)
+
+library(circlize)
+
+tax_heatmap <- tax_heatmap[order(rownames(mat_scaled)),]
+common_rows <- intersect(rownames(tax_heatmap), colnames(mat_scaled))
+tax_heatmap <- tax_heatmap[common_rows, ]
+mat_scaled <- t(mat_scaled[,common_rows])
+#rownames(tax_heatmap)<- tax_heatmap$Species
+rownames(mat_scaled) <-rownames(tax_heatmap)
+
+## Order by stress group
+# meta <- meta %>% data.frame %>% arrange(Stress_group)
+# mat_scaled <- mat_scaled[,rownames(meta)]
+
+plot <- mat_scaled
+genus <- unique(as.character(tax_heatmap$Genus))
+#genus_col <- colorRampPalette(my_palette)(length(genus))#
+genus_col <- my_palette[1:length(genus)]
+names(genus_col) <- genus
+
+pvalue_col_fun = circlize::colorRamp2(c(1,0.1,0.05), c("red", "white", "lightseagreen"))
+
+library(ComplexHeatmap)
+
+ha_row <- HeatmapAnnotation(
+  #'Control vs Stress'=anno_simple(-log10(tax_heatmap$p_val),col = pvalue_col_fun, pch = na_if(tax_heatmap$sign,"ns"), gp = gpar(circlize::fontsize(1))),
+                            Genus=anno_simple(tax_heatmap$Genus, col = genus_col),
+                            which = "row")
+
+ha_row_txt <- rowAnnotation(labels = anno_text(rownames(tax_heatmap), which = "row",gp=gpar(fontsize=10, face= "italic")))
+
+
+
+
+ha_col = HeatmapAnnotation('Stress group'=meta$Stress_group,
+                           col = list('Stress group'=c("Stress"=col_fil[2],
+                                                  "Control"=col_fil[1]))
+                           # , width = max_text_width(unlist(text_list))
+                           )
+
+
+
+Hist <- ComplexHeatmap::pheatmap(plot, 
+                                 cluster_cols = TRUE, cluster_rows = TRUE,
+                                 name="Z-score", col=circlize::colorRamp2(c(-2, 0, 2), c("dodgerblue4", "white","deeppink3")),
+                                 top_annotation = ha_col,
+                                 left_annotation = ha_row,
+                                 right_annotation = ha_row_txt,
+                                 show_colnames = FALSE, 
+                                 show_rownames = FALSE,
+                                 heatmap_legend_param = list(legend_direction = "horizontal")
+                                 )
+Hist
+
+# define the two legend
+lgd_genus = Legend(title = "Genus", legend_gp = gpar(fill = genus_col),labels = genus, ncol = 3)
+
+lgd_sig = Legend(title= " ", pch = "*", type = "points", labels = "p < 0.05")
+
+
+pvalue_col_fun = colorRamp2(c(1,0.1,0.05), c("red", "white", "lightseagreen"))
+
+
+
+lgd_pvalue = Legend(title = "p value",
+                    col_fun  = pvalue_col_fun,
+                    at = c(0, 1, 2),
+                    labels = c("1","0.1","0.05"),
+                    direction = "vertical")
+
+p_Deseq_heatmap <-draw(Hist,
+                       heatmap_legend_list=list(lgd_genus
+                                                #lgd_pvalue,
+                                                #lgd_sig
+                                                ),
+                       heatmap_legend_side = "bottom", annotation_legend_side = "bottom") 
+
+p_Deseq_heatmap 
+
+```
+
+
+## Stress group
+
+```{r, eval = T, include = T, echo = F, message = F}
+#Settings for cutoff values for plotting
+alpha = 0.5 #minimum p-value
+beta = 1.5#minimum log-fold difference 
+
+ps <- PSB
+ps@otu_table <- ps@otu_table + 1
+
+diagdds = phyloseq_to_deseq2(ps, ~ Stress_group)
+diagdds = DESeq2::DESeq(diagdds, test="Wald", fitType="parametric")
+
+res = DESeq2::results(diagdds, cooksCutoff = FALSE)
+
+sigtab = res[which(res$padj < alpha & abs(res$log2FoldChange) > beta),] #Select values from results file with adj p values>alpha AND log2fold cahnge>beta
+sigtab = cbind(as(sigtab, "data.frame"), as.matrix(tax_table(PSB)[rownames(sigtab), ]))
+#head(sigtab)
+
+#Plotting - genus
+# Order order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Order = factor(as.character(sigtab$Order), levels=names(x))
+# Genus order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Genus = factor(as.character(sigtab$Genus), levels=names(x))
+
+diffplot <- ggplot(sigtab, aes(x=Genus, y=log2FoldChange, color=Order)) + geom_point(size=6) + 
+  scale_colour_jco() +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  ggtitle("Differential abundance")
+
+
+##Heatmap of differentially abundant species
+
+#PSB.diff <- merge_phyloseq(subset(otu_table(PSB), rownames(otu_table(PSB)) %in% rownames(sigtab)),tax_table(PSB), sample_data(PSB))
+
+PSB.rel <- microbiome::transform(PSB, "compositional")
+
+PSB.diff.rel <- merge_phyloseq(prune_taxa(rownames(sigtab),PSB.rel),
+                               tax_table(PSB.rel),
+                               sample_data(PSB.rel))
+
+# Format before converting to ampvis objet
+
+##transpose otu table
+PSB.diff.rel@otu_table <- t(PSB.diff.rel@otu_table)
+
+ampvis2_PSB.diff.rel <- amp_load(PSB.diff.rel) #Convert phyloseq to ampvis2 object
+
+ampvis2_PSB.diff.rel$abund <- ampvis2_PSB.diff.rel$abund*100 #Multiply relative abundance by 100 for read percentage
+
+amp_heatmap(ampvis2_PSB.diff.rel,
+            group_by = "Stress_group",
+            tax_aggregate = "Genus",
+            tax_show = 15,
+            normalise = FALSE,
+            tax_empty = "OTU",
+            tax_add = "Family") +
+  theme_classic() +
+  ggtitle("Differentially abundant genera by group")
+
+amp_heatmap(ampvis2_PSB.diff.rel,
+            group_by = "Stress_group",
+            tax_aggregate = "Species",
+            tax_show = 15,
+            normalise = FALSE,
+            tax_empty = "OTU",
+            tax_add = "Genus") +
+  theme_classic() +
+  ggtitle("Differentially abundant genera by group")
+
+```
+
+## Timepoint
+
+```{r, eval = T, include = T, echo = F, message = F}
+#Settings for cutoff values for plotting
+alpha = 0.2 #minimum p-value
+beta = 2 #minimum log-fold difference 
+
+ps <- PSB
+
+diagdds = phyloseq_to_deseq2(ps, ~ Timepoint)
+diagdds = DESeq2::DESeq(diagdds, test="Wald", fitType="parametric")
+
+res = DESeq2::results(diagdds, cooksCutoff = FALSE)
+
+sigtab = res[which(res$padj < alpha & abs(res$log2FoldChange) > beta),] #Select values from results file with adj p values>alpha AND log2fold cahnge>beta
+sigtab = cbind(as(sigtab, "data.frame"), as.matrix(tax_table(PSB)[rownames(sigtab), ]))
+#head(sigtab)
+
+#Plotting - genus
+# Order order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Order = factor(as.character(sigtab$Order), levels=names(x))
+# Genus order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Genus = factor(as.character(sigtab$Genus), levels=names(x))
+
+diffplot <- ggplot(sigtab, aes(x=Genus, y=log2FoldChange, color=Order)) + geom_point(size=6) + 
+  scale_colour_jco() +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  ggtitle("Differential abundance by Gestational age")
+
+
+##Heatmap of differentially abundant species
+
+#PSB.diff <- merge_phyloseq(subset(otu_table(PSB), rownames(otu_table(PSB)) %in% rownames(sigtab)),tax_table(PSB), sample_data(PSB))
+
+PSB.rel <- microbiome::transform(ps, "compositional")
+
+PSB.diff.rel <- merge_phyloseq(prune_taxa(rownames(sigtab),PSB.rel),
+                               tax_table(PSB.rel),
+                               sample_data(PSB.rel))
+
+# Format before converting to ampvis objet
+
+##transpose otu table
+PSB.diff.rel@otu_table <- t(PSB.diff.rel@otu_table)
+
+ampvis2_PSB.diff.rel <- amp_load(PSB.diff.rel) #Convert phyloseq to ampvis2 object
+
+ampvis2_PSB.diff.rel$abund <- ampvis2_PSB.diff.rel$abund*100 #Multiply relative abundance by 100 for read percentage
+
+amp_heatmap(ampvis2_PSB.diff.rel,
+            group_by = "Timepoint",
+            tax_aggregate = "Genus",
+            tax_show = 15,
+            normalise = FALSE,
+            tax_empty = "OTU",
+            tax_add = "Family") +
+  theme_classic() +
+  ggtitle("Differentially abundant genera by group")
+
+```
+
+## Stress group with time point as fixed effect
+
+### Genus level
+
+```{r, eval = T, include = T, echo = F, message = F}
+#Settings for cutoff values for plotting
+alpha = 0.05 #minimum p-value
+beta = 2 #minimum log-fold difference 
+
+ps <- PSB
+
+diagdds = phyloseq_to_deseq2(ps, ~ Stress_group + Timepoint)
+diagdds = DESeq2::DESeq(diagdds, test="Wald", fitType="parametric")
+
+res = DESeq2::results(diagdds, cooksCutoff = FALSE)
+
+sigtab = res[which(res$padj < alpha & abs(res$log2FoldChange) > beta),] #Select values from results file with adj p values>alpha AND log2fold cahnge>beta
+sigtab = cbind(as(sigtab, "data.frame"), as.matrix(tax_table(PSB)[rownames(sigtab), ]))
+#head(sigtab)
+
+#Plotting - genus
+# Order order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Order = factor(as.character(sigtab$Order), levels=names(x))
+# Genus order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Genus = factor(as.character(sigtab$Genus), levels=names(x))
+
+diffplot <- ggplot(sigtab, aes(x=Genus, y=log2FoldChange, color=Order)) + geom_point(size=6) + 
+  scale_colour_jco() +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  ggtitle("Differential abundance by Gestational age")
+
+
+##Heatmap of differentially abundant species
+
+#PSB.diff <- merge_phyloseq(subset(otu_table(PSB), rownames(otu_table(PSB)) %in% rownames(sigtab)),tax_table(PSB), sample_data(PSB))
+
+PSB.rel <- microbiome::transform(ps, "compositional")
+
+PSB.diff.rel <- merge_phyloseq(prune_taxa(rownames(sigtab),PSB.rel),
+                               tax_table(PSB.rel),
+                               sample_data(PSB.rel))
+
+# Format before converting to ampvis objet
+
+##transpose otu table
+PSB.diff.rel@otu_table <- t(PSB.diff.rel@otu_table)
+
+ampvis2_PSB.diff.rel <- amp_load(PSB.diff.rel) #Convert phyloseq to ampvis2 object
+
+ampvis2_PSB.diff.rel$abund <- ampvis2_PSB.diff.rel$abund*100 #Multiply relative abundance by 100 for read percentage
+
+amp_heatmap(ampvis2_PSB.diff.rel,
+            group_by = "Stress_group",
+            tax_aggregate = "Genus",
+            tax_show = 12,
+            normalise = FALSE,
+            tax_empty = "OTU",
+            tax_add = "Family") +
+  theme_classic() +
+  ggtitle("Differentially abundant genera by group")
+
+```
+
+### Pheatmap
+
+```{r, eval = T, include = T, echo = F, message = F}
+library("pheatmap")
+annotation <- ampvis2_PSB.diff.rel$metadata %>%
+  dplyr::select(c("Stress_group","Sex_child","Education_mother","Timepoint"))
+
+colnames(annotation) 
+
+heat_colors <- brewer.pal(6, "YlOrRd")
+
+pheatmap(ampvis2_PSB.diff.rel$abund,
+         color = heat_colors, 
+         cluster_rows = T, 
+         show_rownames = F,
+         annotation = annotation, 
+         border_color = NA, 
+         fontsize = 10, 
+         scale = "row", 
+         fontsize_row = 10, 
+         height = 20)
+```
+
+### Species level
+
+```{r, eval = T, include = T, echo = F, message = F}
+#Settings for cutoff values for plotting
+alpha = 0.05 #minimum p-value
+beta = 2 #minimum log-fold difference 
+
+ps <- PSB
+
+diagdds = phyloseq_to_deseq2(ps, ~ Stress_group + Timepoint)
+diagdds = DESeq2::DESeq(diagdds, test="Wald", fitType="parametric")
+
+res = DESeq2::results(diagdds, cooksCutoff = FALSE)
+
+sigtab = res[which(res$padj < alpha & abs(res$log2FoldChange) > beta),] #Select values from results file with adj p values>alpha AND log2fold cahnge>beta
+sigtab = cbind(as(sigtab, "data.frame"), as.matrix(tax_table(PSB)[rownames(sigtab), ]))
+#head(sigtab)
+
+#Plotting - genus
+# Order order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Order = factor(as.character(sigtab$Order), levels=names(x))
+# Genus order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Genus = factor(as.character(sigtab$Genus), levels=names(x))
+
+diffplot <- ggplot(sigtab, aes(x=Genus, y=log2FoldChange, color=Order)) + geom_point(size=6) + 
+  scale_colour_jco() +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  ggtitle("Differential abundance by Gestational age")
+
+
+##Heatmap of differentially abundant species
+
+#PSB.diff <- merge_phyloseq(subset(otu_table(PSB), rownames(otu_table(PSB)) %in% rownames(sigtab)),tax_table(PSB), sample_data(PSB))
+
+PSB.rel <- microbiome::transform(ps, "compositional")
+
+PSB.diff.rel <- merge_phyloseq(prune_taxa(rownames(sigtab),PSB.rel),
+                               tax_table(PSB.rel),
+                               sample_data(PSB.rel))
+
+# Format before converting to ampvis objet
+
+##transpose otu table
+PSB.diff.rel@otu_table <- t(PSB.diff.rel@otu_table)
+
+ampvis2_PSB.diff.rel <- amp_load(PSB.diff.rel) #Convert phyloseq to ampvis2 object
+
+ampvis2_PSB.diff.rel$abund <- ampvis2_PSB.diff.rel$abund*100 #Multiply relative abundance by 100 for read percentage
+
+amp_heatmap(ampvis2_PSB.diff.rel,
+            group_by = "Stress_group",
+            tax_aggregate = "Species",
+            tax_show = 15,
+            normalise = FALSE,
+            tax_empty = "OTU",
+            tax_add = "Genus") +
+  theme_classic() +
+  ggtitle("Differentially abundant species by group")
+
+```
+
+## Time point with stress group as fixed effect
+
+```{r, eval = T, include = T, echo = F, message = F}
+#Settings for cutoff values for plotting
+alpha = 0.05 #minimum p-value
+beta = 2 #minimum log-fold difference 
+
+ps <- PSB
+
+diagdds = phyloseq_to_deseq2(ps, ~ Timepoint + Stress_group)
+diagdds = DESeq2::DESeq(diagdds, test="Wald", fitType="parametric")
+
+res = DESeq2::results(diagdds, cooksCutoff = FALSE)
+
+sigtab = res[which(res$padj < alpha & abs(res$log2FoldChange) > beta),] #Select values from results file with adj p values>alpha AND log2fold cahnge>beta
+sigtab = cbind(as(sigtab, "data.frame"), as.matrix(tax_table(PSB)[rownames(sigtab), ]))
+#head(sigtab)
+
+#Plotting - genus
+# Order order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Order = factor(as.character(sigtab$Order), levels=names(x))
+# Genus order based on abundance 
+x = tapply(sigtab$log2FoldChange, sigtab$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Genus = factor(as.character(sigtab$Genus), levels=names(x))
+
+diffplot <- ggplot(sigtab, aes(x=Genus, y=log2FoldChange, color=Order)) + geom_point(size=6) + 
+  scale_colour_jco() +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  ggtitle("Differential abundance by Gestational age")
+
+
+##Heatmap of differentially abundant species
+
+#PSB.diff <- merge_phyloseq(subset(otu_table(PSB), rownames(otu_table(PSB)) %in% rownames(sigtab)),tax_table(PSB), sample_data(PSB))
+
+PSB.rel <- microbiome::transform(ps, "compositional")
+
+PSB.diff.rel <- merge_phyloseq(prune_taxa(rownames(sigtab),PSB.rel),
+                               tax_table(PSB.rel),
+                               sample_data(PSB.rel))
+
+# Format before converting to ampvis objet
+
+##transpose otu table
+PSB.diff.rel@otu_table <- t(PSB.diff.rel@otu_table)
+
+ampvis2_PSB.diff.rel <- amp_load(PSB.diff.rel) #Convert phyloseq to ampvis2 object
+
+ampvis2_PSB.diff.rel$abund <- ampvis2_PSB.diff.rel$abund*100 #Multiply relative abundance by 100 for read percentage
+
+amp_heatmap(ampvis2_PSB.diff.rel,
+            group_by = "Timepoint",
+            tax_aggregate = "Genus",
+            tax_show = 15,
+            normalise = FALSE,
+            tax_empty = "OTU",
+            tax_add = "Family") +
+  theme_classic() +
+  ggtitle("Differentially abundant genera by group")
+```
+
+# Differential abundance - MaAsLin2
+
+## ASV level
+
+```{r, eval = F, include = F, echo = F, message = F}
+library(Maaslin2)
+
+# input_data <- system.file(
+#     'extdata','HMP2_taxonomy.tsv', package="Maaslin2")
+# input_metadata <-system.file(
+#     'extdata','HMP2_metadata.tsv', package="Maaslin2")
+# 
+# fit_ <- Maaslin2(
+#     input_data, input_metadata, 'demo_output'
+#     fixed_effects = c('diagnosis', 'dysbiosisnonIBD','dysbiosisUC','dysbiosisCD', 'antibiotics', 'age'),
+#     random_effects = c('site', 'subject'),
+#     standardize = FALSE)
+
+input_data <- data.frame(otu_table(PSB))
+#Add taxonomy to otu_table
+tax_concat <- as.data.frame(PSB@tax_table) %>% 
+  replace(is.na(.), "unknown") %>%
+  tidyr::unite("Taxonomy","Family":"Species",remove=FALSE)
+colnames(input_data) <- tax_concat$Taxonomy
+
+input_metadata <- data.frame(sample_data(PSB))
+
+fit_stress_and_time <- Maaslin2(
+    input_data, input_metadata, 'masslin_stress_timepoint',
+    fixed_effects = c('Stress_group','Timepoint'),
+    #random_effects = c('Subject_ID'),
+    standardize = FALSE)
+
+
+```
+
+## Genus level
+
+```{r, eval = F, include = F, echo = F, message = F}
+ps <- tax_glom(PSB, "Genus", NArm = FALSE)
+
+input_data <- data.frame(otu_table(ps))
+#Add taxonomy to otu_table
+tax_concat <- as.data.frame(ps@tax_table) %>% 
+  replace(is.na(.), "unknown") %>%
+  tidyr::unite("Taxonomy","Family":"Species",remove=FALSE)
+colnames(input_data) <- tax_concat$Taxonomy
+
+input_metadata <- data.frame(sample_data(ps))
+
+fit_stress_and_time <- Maaslin2(
+    input_data, input_metadata, 'masslin_stress_timepoint_genus',
+    fixed_effects = c('Stress_group','Timepoint'),
+    #random_effects = c('Subject_ID'),
+    standardize = FALSE)
+
+
+```
+
+## Species level
+
+```{r, eval = F, include = F, echo = F, message = F}
+ps <- tax_glom(PSB, "Species", NArm = FALSE)
+
+input_data <- data.frame(otu_table(ps))
+#Add taxonomy to otu_table
+tax_concat <- as.data.frame(ps@tax_table) %>% 
+  replace(is.na(.), "unknown") %>%
+  tidyr::unite("Taxonomy","Family":"Species",remove=FALSE)
+colnames(input_data) <- tax_concat$Taxonomy
+
+input_metadata <- data.frame(sample_data(ps))
+
+fit_stress_and_time <- Maaslin2(
+    input_data, input_metadata, 'masslin_stress_timepoint_genus_species',
+    fixed_effects = c('Stress_group','Timepoint'),
+    #random_effects = c('Subject_ID'),
+    standardize = FALSE)
+
+
+```
+
+# Effect size
+
+```{r, eval = T, include = F, echo = F, message = F}
+
+######Importing-Data
+
+standf = function(x, t=total) round(t * (x / sum(x)))
+total = median(sample_sums(PSB))
+PSB.R = transform_sample_counts(PSB, standf)
+
+import.otu.table <- as.data.frame(otu_table(PSB.R)) %>%
+  #dplyr::select(-taxonomy) %>%
+  mutate_all(as.numeric) #Convert to numeric where possible
+
+cure.data = PSB@sam_data %>% as.matrix() %>% as.data.frame()
+
+#import.taxonomy = read.table('virome_taxonomy_LCA_known.txt', header = T)
+
+rownames <- rownames(cure.data)
+
+#Remove NA colomns
+
+cure.data <- cure.data[ , ! apply( cure.data , 2 , function(x) all(is.na(x)) ) ]
+
+#Set numeric column class
+cure.data <- cure.data %>% mutate_if(is.character,as.factor)
+#Add back rownames
+
+rownames(cure.data) <- rownames
+
+#cure.data <- cure.data %>% mutate_if(is.character, as.numeric)
+
+X8.nonrarefied = t(import.otu.table)                                                                  ###%%% non-rarefied
+
+
+###rarefying|subsampling reads in every sample
+barplot(colSums(import.otu.table))
+min(colSums(import.otu.table))
+
+rare8 = rrarefy(t(import.otu.table), sample = 30000)
+X8.rarefied = as.data.frame(rare8)                                                                 ###%%% rarefied
+
+###Subset metadata to match remaining samples after rarefaction
+
+Y.all = cure.data[colnames(X8.rarefied),]
+
+###Log tranformation
+X.all = log10(X8.rarefied+1)
+
+#Select relevant numeric column
+
+
+Y <- Y.all %>%
+  select(key.vars) %>%
+  drop_na() %>%
+select_if(~ !any(is.na(.)))
+
+#Y <- Y[1:8]
+
+colnames(Y) #Check remaining columns
+
+###Select only numeric metadata culumns
+
+Y  <- Y %>% mutate_all(as.numeric)
+
+colnames(Y) #Check remaining columns
+
+##vifcor
+#collinearity <- vifcor(Y, th  =0.5) #at 0.5 threshold variables have a VIF below 10.00 (<0.21 correlation!)
+#collinearity
+
+#Select relevant columns for that are non-collinear
+
+Y.ad = Y
+#Y.ad <- dplyr::select(Y.all,c("Batch", "Time")
+
+#Y.ad <- Y.all[8:23]
+
+#Remove NA rows
+
+Y <- Y %>% drop_na()
+X <- X.all[,rownames(Y)]
+
+#is.na(Y)
+
+X = X[rowSums(X[])>0,] 
+
+X = t(X)
+```
+
+
+```{r, eval = T, include = F, echo = F, message = F, warning=F}
+###############Anova on capscale - all variables
+
+anova.m <- matrix(nrow = 0, ncol =6) #Create matrix for results
+colnames(anova.m) <- c("Df","SumOfSqs","F","Pr.F","Residual.Df","Residual.SumOfSqs")                
+for (i in colnames(Y)){
+  anova <- as.matrix(anova.cca(capscale(X ~ Y[,i], dist = "bray"),permutations = how(nperm=99999)))
+  anova <- c(anova[1,],anova[2,1:2])
+  anova.m <-rbind(anova.m,anova)
+}
+rownames(anova.m) <- colnames(Y)
+
+#Prepare for plotting
+anova.dat <- anova.m %>%
+  as.data.frame %>%
+  tibble::rownames_to_column("Variable") %>%
+  arrange(F)
+
+#Add adjusted p-values
+anova.dat$Pr.F.adj <- p.adjust(anova.dat$Pr.F, method = 'holm', n = ncol (Y.ad))
+
+#knitr::kable(anova.dat)
+
+#Calculate sum of squares
+anova.dat$R2 <- anova.dat$SumOfSqs / (anova.dat$SumOfSqs + anova.dat$Residual.SumOfSqs)
+
+##Fancy plot
+
+anova.melt <- tidyr::pivot_longer(anova.dat,cols=c("R2"), names_to='measure', values_to="value") %>%
+  add_significance(p.col = "Pr.F.adj", output.col = "PrF.sym",
+                   cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1,1),
+                   symbols = c("****", "***", "**", "*", ".", "")
+                   )
+
+anova.melt.bac <- anova.melt
+
+fancy.anova.bar <- ggbarplot(anova.melt,
+                                         x="Variable",
+                                         y="value",
+                                         #color = "Variable",
+                                         orientation = c("horizontal"),
+                                         color = NA,
+                                         fill = "measure",
+                                         position=position_dodge(0.7),
+                                         label = anova.melt$PrF.sym,
+                                         lab.size = 9,
+                                         lab.vjust = 0.7,
+                                         lab.hjust = -0.3
+                                         
+) +
+  #stat_pvalue_manual(
+  #  adonis.melt,  label = "PrF.sym", tip.length = 0.01
+  #) +
+  #geom_hline(yintercept = 0.05) +
+  ggtitle("Permanova: individual effect sizes") +
+  ylab(expression(R^2~"value")) +
+  scale_fill_jco() +
+  theme(plot.margin = margin(0.1,1,0.1,0.1, "cm")) +
+  scale_y_continuous(expand = expansion(mult = c(0, .15))) 
+
+#fancy.anova.bar
+
+```
+
+```{r, eval = T, include = F, echo = F, message = F}
+##All variables
+
+adonis <- adonis2(X ~ ., data = Y, method = "bray", permutations = 9999) #All variables
+
+#Add adjusted p-values
+adonis$`Pr(>F).adj` <- p.adjust(adonis$`Pr(>F)`, method = 'holm', n = ncol (Y.ad))
+
+#knitr::kable(adonis$aov.tab)
+
+#Plotting ordered R2
+adonis.dat <- as.data.frame(adonis) %>%
+  tibble::rownames_to_column("Variable")  %>%
+  filter(!Variable %in% c("Residual","Total")) %>%
+  arrange(R2)
+
+adonis.melt <- tidyr::pivot_longer(adonis.dat,cols=c("R2"), names_to='measure', values_to="value") %>%
+  add_significance(p.col = "Pr(>F).adj",
+                   output.col = "PrF.sym",
+                   cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1,1),
+                   symbols = c("****", "***", "**", "*", ".", "")
+                   )
+
+
+
+fancy.adonis.bar <- ggbarplot(adonis.melt,
+                                  x="Variable",
+                                         y="value",
+                                         #color = "Variable",
+                                         orientation = c("horizontal"),
+                                         color = NA,
+                                         fill = "measure",
+                                         position=position_dodge(0.7),
+                                         label = adonis.melt$PrF.sym,
+                                         lab.size = 9,
+                                         lab.vjust = 0.7,
+                                         lab.hjust = -0.3
+) +
+  ggtitle("Adonis2: decomposition of effect sizes") +
+  scale_fill_jco() +
+  scale_y_continuous(expand = expansion(mult = c(0, .15))) 
+  #scale_x_discrete(expand = expansion(add = .1))
+  
+
+#fancy.adonis.bar
+
+```
+
+## Dependent and independent effect size
+
+Capscale examines the correlation of each varible independently. Adonis uses dbRDA to quantidy the effect of the most strongest correlating factor, removing it and then examining the remaining effect of the next factor and so forth...
+
+```{r, eval = T, include = T, echo = F, message = F, , fig.width=10, fig.height=15, fig.fullwidth = TRUE}
+cowplot::plot_grid(fancy.anova.bar, fancy.adonis.bar)  +
+  coord_cartesian(clip = "off")
+```
+
+```{r, eval = F, include = T, echo = F, message = F, , fig.width=10, fig.height=15, fig.fullwidth = TRUE}
+ggsave("Effect_size_all_variables.tiff",width = 25, height = 50, units = "cm", dpi = 250) 
+```
+
+## Adjusted for timepoint
+
+```{r, eval = T, include = T, echo = F, message = F, warning=F}
+###############Anova on capscale - all variables
+
+anova.m <- matrix(nrow = 0, ncol =6) #Create matrix for results
+colnames(anova.m) <- c("Df","SumOfSqs","F","Pr.F","Residual.Df","Residual.SumOfSqs")                
+for (i in colnames(dplyr::select(Y,-c("Timepoint")))){
+  anova <- as.matrix(anova.cca(capscale(X ~ Y[,i] + Timepoint, Y, dist = "bray"),permutations = how(nperm=9999)))
+  anova <- c(anova[1,],anova[2,1:2])
+  anova.m <-rbind(anova.m,anova)
+}
+rownames(anova.m) <- colnames(dplyr::select(Y,-c("Timepoint")))
+
+#Prepare for plotting
+anova.dat <- anova.m %>%
+  as.data.frame %>%
+  tibble::rownames_to_column("Variable") %>%
+  arrange(F)
+
+#Add adjusted p-values
+anova.dat$Pr.F.adj <- p.adjust(anova.dat$Pr.F, method = 'holm', n = ncol (Y.ad))
+
+#knitr::kable(anova.dat)
+
+#Calculate sum of squares
+anova.dat$R2 <- anova.dat$SumOfSqs / (anova.dat$SumOfSqs + anova.dat$Residual.SumOfSqs)
+
+#Fix names
+anova.dat$Variable <- gsub("_"," ",anova.dat$Variable)
+
+##Fancy plot
+
+anova.melt <- tidyr::pivot_longer(anova.dat,cols=c("R2"), names_to='measure', values_to="value") %>%
+  add_significance(p.col = "Pr.F.adj", output.col = "PrF.sym",
+                   cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1,1),
+                   symbols = c("****", "***", "**", "*", ".", "")
+                   )
+
+permanova.ctime.mother <- anova.melt
+
+fancy.anova.bar.mother <- ggbarplot(anova.melt,
+                                         x="Variable",
+                                         y="value",
+                                         #color = "Variable",
+                                         orientation = c("horizontal"),
+                                         color = NA,
+                                         fill = "measure",
+                                         position=position_dodge(0.7),
+                                         label = anova.melt$PrF.sym,
+                                         lab.size = 9,
+                                         lab.vjust = 0.7,
+                                         lab.hjust = -0.3
+                                         
+) +
+  #stat_pvalue_manual(
+  #  adonis.melt,  label = "PrF.sym", tip.length = 0.01
+  #) +
+  #geom_hline(yintercept = 0.05) +
+  #ggtitle("Permanova: individual effect sizes") +
+  xlab("") +
+  ylab(expression(R^2~"value")) +
+  scale_fill_jco() +
+  theme(plot.margin = margin(0.1,1,0.1,0.1, "cm"),
+        axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, .2)),breaks = c(0.00, 0.01, 0.02)) 
+
+fancy.anova.bar.mother
+
+```
+
+### Adjusted for infant sex + timepoint
+
+```{r, eval = T, include = T, echo = F, message = F, warning=F}
+###############Anova on capscale - all variables
+
+anova.m <- matrix(nrow = 0, ncol =6) #Create matrix for results
+colnames(anova.m) <- c("Df","SumOfSqs","F","Pr.F","Residual.Df","Residual.SumOfSqs")                
+for (i in colnames(dplyr::select(Y,-c("Timepoint","Sex_child")))){
+  anova <- as.matrix(anova.cca(capscale(X ~ Y[,i] + Timepoint + Condition(Sex_child), Y, dist = "bray"),permutations = how(nperm=9999)))
+  anova <- c(anova[1,],anova[2,1:2])
+  anova.m <-rbind(anova.m,anova)
+}
+rownames(anova.m) <- colnames(dplyr::select(Y,-c("Timepoint","Sex_child")))
+
+#Prepare for plotting
+anova.dat <- anova.m %>%
+  as.data.frame %>%
+  tibble::rownames_to_column("Variable") %>%
+  arrange(F)
+
+#Add adjusted p-values
+anova.dat$Pr.F.adj <- p.adjust(anova.dat$Pr.F, method = 'holm', n = ncol (Y.ad))
+
+#knitr::kable(anova.dat)
+
+#Calculate sum of squares
+anova.dat$R2 <- anova.dat$SumOfSqs / (anova.dat$SumOfSqs + anova.dat$Residual.SumOfSqs)
+
+#Fix names
+anova.dat$Variable <- gsub("_"," ",anova.dat$Variable)
+
+##Fancy plot
+
+anova.melt <- tidyr::pivot_longer(anova.dat,cols=c("R2"), names_to='measure', values_to="value") %>%
+  add_significance(p.col = "Pr.F.adj", output.col = "PrF.sym",
+                   cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1,1),
+                   symbols = c("****", "***", "**", "*", ".", "")
+                   )
+
+permanova.ctime.mother.sex <- anova.melt
+
+fancy.anova.bar.mother.sex <- ggbarplot(anova.melt,
+                                         x="Variable",
+                                         y="value",
+                                         #color = "Variable",
+                                         orientation = c("horizontal"),
+                                         color = NA,
+                                         fill = "measure",
+                                         position=position_dodge(0.7),
+                                         label = anova.melt$PrF.sym,
+                                         lab.size = 9,
+                                         lab.vjust = 0.7,
+                                         lab.hjust = -0.3
+                                         
+) +
+  #stat_pvalue_manual(
+  #  adonis.melt,  label = "PrF.sym", tip.length = 0.01
+  #) +
+  #geom_hline(yintercept = 0.05) +
+  #ggtitle("Permanova: individual effect sizes") +
+  xlab("") +
+  ylab(expression(R^2~"value")) +
+  scale_fill_jco() +
+  theme(plot.margin = margin(0.1,1,0.1,0.1, "cm"),
+        axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, .15))) 
+
+fancy.anova.bar.mother.sex
+
+```
+
+## Infant factors
+
+```{r, eval = T, include = T, echo = F, message = F, warning=F}
+Y <- Y.all %>%
+  select(key.vars.inf) %>%
+  drop_na() %>%
+select_if(~ !any(is.na(.)))
+
+#Y <- Y[1:8]
+
+colnames(Y) #Check remaining columns
+
+###Select only numeric metadata culumns
+
+Y  <- Y %>% mutate_all(as.numeric)
+
+colnames(Y) #Check remaining columns
+
+##vifcor
+#collinearity <- vifcor(Y, th  =0.5) #at 0.5 threshold variables have a VIF below 10.00 (<0.21 correlation!)
+#collinearity
+
+#Select relevant columns for that are non-collinear
+
+Y.ad = Y
+#Y.ad <- dplyr::select(Y.all,c("Batch", "Time")
+
+#Y.ad <- Y.all[8:23]
+
+#Remove NA rows
+
+Y <- Y %>% drop_na()
+X <- X.all[,rownames(Y)]
+
+X = X[rowSums(X[])>0,] 
+
+X = t(X)
+```
+
+
+```{r, eval = T, include = T, echo = F, message = F, warning=F}
+###############Anova on capscale - all variables
+
+anova.m <- matrix(nrow = 0, ncol =6) #Create matrix for results
+colnames(anova.m) <- c("Df","SumOfSqs","F","Pr.F","Residual.Df","Residual.SumOfSqs")                
+for (i in colnames(dplyr::select(Y,-c("Timepoint")))){
+  anova <- as.matrix(anova.cca(capscale(X ~ Y[,i] + Timepoint, Y, dist = "bray"),permutations = how(nperm=99999)))
+  anova <- c(anova[1,],anova[2,1:2])
+  anova.m <-rbind(anova.m,anova)
+}
+rownames(anova.m) <- colnames(dplyr::select(Y,-c("Timepoint")))
+
+#Prepare for plotting
+anova.dat <- anova.m %>%
+  as.data.frame %>%
+  tibble::rownames_to_column("Variable") %>%
+  arrange(F)
+
+#Add adjusted p-values
+anova.dat$Pr.F.adj <- p.adjust(anova.dat$Pr.F, method = 'holm', n = ncol (Y.ad))
+
+#knitr::kable(anova.dat)
+
+#Calculate sum of squares
+anova.dat$R2 <- anova.dat$SumOfSqs / (anova.dat$SumOfSqs + anova.dat$Residual.SumOfSqs)
+
+#Fix names
+anova.dat$Variable <- gsub("_"," ",anova.dat$Variable)
+
+##Fancy plot
+
+anova.melt <- tidyr::pivot_longer(anova.dat,cols=c("R2"), names_to='measure', values_to="value") %>%
+  add_significance(p.col = "Pr.F.adj", output.col = "PrF.sym",
+                   cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1,1),
+                   symbols = c("****", "***", "**", "*", ".", "")
+                   )
+
+permanova.ctime.inf <- anova.melt
+
+fancy.anova.bar.inf <- ggbarplot(anova.melt,
+                                         x="Variable",
+                                         y="value",
+                                         #color = "Variable",
+                                         orientation = c("horizontal"),
+                                         color = NA,
+                                         fill = "measure",
+                                         position=position_dodge(0.7),
+                                         label = anova.melt$PrF.sym,
+                                         lab.size = 9,
+                                         lab.vjust = 0.7,
+                                         lab.hjust = -0.3
+                                         
+) +
+  #stat_pvalue_manual(
+  #  adonis.melt,  label = "PrF.sym", tip.length = 0.01
+  #) +
+  #geom_hline(yintercept = 0.05) +
+  xlab("") +
+  ylab(expression(R^2~"value")) +
+  scale_fill_jco() +
+  theme(plot.margin = margin(0.1,1,0.1,0.1, "cm"),
+        axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, .15))) 
+
+fancy.anova.bar.inf
+
+```
+
+## Cortisol
+
+```{r, eval = T, include = T, echo = F, message = F, warning=F}
+Y <- Y.all %>%
+  select(key.vars.cortisol) %>%
+  drop_na() %>%
+select_if(~ !any(is.na(.)))
+
+#Y <- Y[1:8]
+
+colnames(Y) #Check remaining columns
+
+###Select only numeric metadata culumns
+
+Y  <- Y %>% mutate_all(as.numeric)
+
+colnames(Y) #Check remaining columns
+
+##vifcor
+#collinearity <- vifcor(Y, th  =0.5) #at 0.5 threshold variables have a VIF below 10.00 (<0.21 correlation!)
+#collinearity
+
+#Select relevant columns for that are non-collinear
+
+#Y.ad <- dplyr::select(Y.all,c("Batch", "Time")
+
+#Y.ad <- Y.all[8:23]
+
+#Remove NA rows
+
+Y <- Y %>% drop_na() %>% dplyr::rename(
+    `HM cortisol AUC day 10` = `HM_cortisol_AUC_1`,
+    `HM cortisol AUC day 2` = `HM_cortisol_AUC_2`,
+    `Saliva cortisol morning peak` = `Saliva_cortisol_morning_peak`
+  )
+
+
+X <- X.all[,rownames(Y)]
+
+X = X[rowSums(X[])>0,] 
+
+X = t(X)
+```
+
+
+```{r, eval = T, include = T, echo = F, message = F, warning=F}
+###############Anova on capscale - all variables
+
+anova.m <- matrix(nrow = 0, ncol =6) #Create matrix for results
+colnames(anova.m) <- c("Df","SumOfSqs","F","Pr.F","Residual.Df","Residual.SumOfSqs")                
+for (i in colnames(dplyr::select(Y,-c("Timepoint")))){
+  anova <- as.matrix(anova.cca(capscale(X ~ Y[,i] + Timepoint, Y, dist = "bray"),permutations = how(nperm=99999)))
+  anova <- c(anova[1,],anova[2,1:2])
+  anova.m <-rbind(anova.m,anova)
+}
+rownames(anova.m) <- colnames(dplyr::select(Y,-c("Timepoint")))
+
+#Prepare for plotting
+anova.dat <- anova.m %>%
+  as.data.frame %>%
+  tibble::rownames_to_column("Variable") %>%
+  arrange(F)
+
+#Add adjusted p-values
+anova.dat$Pr.F.adj <- p.adjust(anova.dat$Pr.F, method = 'holm', n = ncol (Y.ad))
+
+#knitr::kable(anova.dat)
+
+#Calculate sum of squares
+anova.dat$R2 <- anova.dat$SumOfSqs / (anova.dat$SumOfSqs + anova.dat$Residual.SumOfSqs)
+
+#Fix names
+anova.dat$Variable <- gsub("_"," ",anova.dat$Variable)
+
+##Fancy plot
+
+anova.melt <- tidyr::pivot_longer(anova.dat,cols=c("R2"), names_to='measure', values_to="value") %>%
+  add_significance(p.col = "Pr.F.adj", output.col = "PrF.sym",
+                   cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1,1),
+                   symbols = c("****", "***", "**", "*", ".", "")
+                   )
+
+anova.melt
+
+permanova.ctime.cort <- anova.melt
+
+fancy.anova.bar.cort <- ggbarplot(anova.melt,
+                                         x="Variable",
+                                         y="value",
+                                         #color = "Variable",
+                                         orientation = c("horizontal"),
+                                         color = NA,
+                                         fill = "measure",
+                                         position=position_dodge(0.7),
+                                         label = anova.melt$PrF.sym,
+                                         lab.size = 9,
+                                         lab.vjust = 0.7,
+                                         lab.hjust = -0.3
+                                         
+) +
+  #stat_pvalue_manual(
+  #  adonis.melt,  label = "PrF.sym", tip.length = 0.01
+  #) +
+  #geom_hline(yintercept = 0.05) +
+  xlab("") +
+  ylab(expression(R^2~"value")) +
+  scale_fill_jco() +
+  theme(plot.margin = margin(0.1,1,0.1,0.1, "cm"),
+        axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, .15))) 
+
+fancy.anova.bar.cort
+
+```
+
+# Metadata auto correlations
+
+```{r, eval = F, include = F, echo = F, message = F}
+
+
+meta.pairs <- meta %>%
+  select(c("Stress_group",
+           "Sex_child",
+           "PSS_stress_score",
+           "LSCr_stress_score",
+           "Education_mother",
+           "BMI_mother",
+           "Timepoint",
+           "Hair.cortisol"
+           )) %>% 
+  mutate_if(is.numeric, round)
+
+library(GGally)
+
+ggpairs<-ggpairs(meta.pairs)
+
+ggsave("results/metadata_auto_cor_ggally.pdf",ggpairs,width=30,height=30,limitsize = FALSE, units = "cm", dpi = 400)
+
+ggpairs
+
+ggpairs_time<-ggpairs(meta.pairs,
+                 mapping=ggplot2::aes(colour = Timepoint),
+                 lower=list(combo=wrap("facethist",binwidth=1))
+                 )
+
+ggpairs_time
+
+ggsave("results/metadata_auto_cor_ggally_time.pdf",ggpairs_time,width=30,height=30,limitsize = FALSE, units = "cm", dpi = 400)
+
+ggpairs_stress_group<-ggpairs(meta.pairs,
+                 mapping=ggplot2::aes(colour = Stress_group),
+                 lower=list(combo=wrap("facethist",binwidth=1))
+                 )
+
+ggpairs_stress_group
+
+ggsave("results/metadata_auto_cor_ggally_stress_group.pdf",ggpairs_stress_group,width=30,height=30,limitsize = FALSE, units = "cm", dpi = 400)
+
+
+
+```
+
+# Microeco plots
+
+```{r, eval = T, include = T, echo = F, message = F}
+meco_dat <- file2meco::phyloseq2meco(PSB)
+```
+
+# Beta diversity
+
+## Time
+
+```{r}
+variable = "Stress_group"
+
+
+#Calculta beta diversity metrics
+meco_dat$cal_betadiv(unifrac = TRUE)
+
+# create an trans_beta object
+# measure parameter must be one of names(dataset$beta_diversity)
+t1 <- trans_beta$new(dataset = meco_dat, group = variable, measure = "bray")
+
+#PCoA, PCA and NMDS are available
+t1$cal_ordination(ordination = "PCoA")
+
+# t1$res_ordination is the ordination result list
+#class(t1$res_ordination)
+
+# plot the PCoA result with confidence ellipse
+#t1$plot_ordination(plot_color = variable, plot_shape = variable, plot_type = c("point", "ellipse"))
+```
+
+### Within-group distances
+
+```{r}
+# calculate and plot sample distances within groups
+t1$cal_group_distance(within_group = TRUE)
+# return t1$res_group_distance
+# perform Wilcoxon Rank Sum and Signed Rank Tests
+t1$cal_group_distance_diff(method = "wilcox")
+# plot_group_order parameter can be used to adjust orders in x axis
+t1$plot_group_distance(boxplot_add = "mean")
+```
+
+#### Dispersion
+
+```{r}
+# for the whole comparison and for each paired groups
+t1$cal_betadisper()
+## The result is stored in object$res_betadisper ...
+t1$res_betadisper
+```
+
+## Timepoint
+
+```{r}
+variable = "Timepoint"
+# create an trans_beta object
+# measure parameter must be one of names(dataset$beta_diversity)
+t1 <- trans_beta$new(dataset = meco_dat, group = variable, measure = "bray")
+
+#PCoA, PCA and NMDS are available
+t1$cal_ordination(ordination = "PCoA")
+
+# t1$res_ordination is the ordination result list
+#class(t1$res_ordination)
+
+# plot the PCoA result with confidence ellipse
+#t1$plot_ordination(plot_color = variable, plot_shape = variable, plot_type = c("point", "ellipse"))
+```
+
+
+### Within-group distances
+
+```{r}
+# calculate and plot sample distances within groups
+t1$cal_group_distance(within_group = TRUE)
+# return t1$res_group_distance
+# perform Wilcoxon Rank Sum and Signed Rank Tests
+t1$cal_group_distance_diff(method = "wilcox")
+# plot_group_order parameter can be used to adjust orders in x axis
+t1$plot_group_distance(boxplot_add = "mean")
+```
+
+
+
+#### Dispersion
+
+```{r}
+# for the whole comparison and for each paired groups
+t1$cal_betadisper()
+## The result is stored in object$res_betadisper ...
+t1$res_betadisper
+```
+# Explainable class
+
+## Seclect variables
+
+```{r}
+#env <- select(meco_dat$sample_table,all_of(effect.size.variables)) %>%
+#  mutate(Stress_group = as.numeric(as.character(Stress_group))) %>%
+#  select(-c("Batch","AB.infant")) %>%
+#  select(where(is.numeric)) %>%
+#  drop_na(Gestational.age) %>%
+#  drop_na() %>%
+#  select_if(~ !any(is.na(.)))
+
+env <- meco_dat$sample_table %>%
+  dplyr::select(key.vars) %>%
+  dplyr::select(-Timepoint) %>%
+ drop_na() %>%
+  #tidyr::drop_na() %>% #Drop any rows with NAs
+  dplyr::mutate_if(is.character, as.factor)
+
+#Fix environmental variable names
+colnames(env) <- colnames(env) %>% gsub("_"," ",.)
+
+str(env)
+
+colnames(env)
+```
+
+
+Creating trans_env object 
+
+```{r, warning = F}
+env$`Sex child` <- env$`Sex child` %>% recode("0"="Female","1"="Male")
+
+t1 <- trans_env$new(dataset = meco_dat,
+                    add_data = env)
+```
+
+## RDA
+
+### Genus
+
+```{r, warning = F}
+# use Genus
+t1$cal_ordination(method = "RDA", taxa_level = "Genus")
+# As the main results of RDA are related with the projection and angles between different arrows,
+# we adjust the length of the arrow to show them clearly using several parameters.
+t1$trans_ordination(show_taxa = 10, adjust_arrow_length = TRUE,
+                    min_perc_env = 0.2,
+                    max_perc_env = 0.5,
+                    min_perc_tax = 1.5,
+                    max_perc_tax = 2.5
+                    )
+# t1$res_rda_trans is the transformed result for plot
+
+rda.group <- t1$plot_ordination(plot_color = "Stress_group",
+                                plot_type = c("point"),
+                                env_text_size = 4,
+                   taxa_text_size = 4,
+                   taxa_text_color="darkred",
+                   taxa_arrow_color="darkred",
+                   point_alpha=0.2,
+                   taxa_nudge_x = c(0,0,0,-150,0,0,0,0,0,0),
+                   taxa_nudge_y = c(0,100,300,0,-200,-100,-100,-200,2,0)) + 
+  theme_classic() + 
+  theme(plot.title = element_text(size = 12, face = "bold",hjust = 0.5),
+        strip.background = element_blank(),
+        strip.text.x = element_blank()
+        #legend.position = "none"
+        ) +
+  labs(color="Stress group",fill="") +
+  scale_fill_discrete(guide = FALSE)
+
+rda.group
+```
+
+# Species environmental factors
+
+The correlations between environmental variables and taxa are important in analyzing and inferring the factors affecting community structure. Let’s first perform a correlation heatmap using relative abundance data at Genus level with the cal_cor function. The parameter p_adjust_type can control the p value adjustment type.
+
+```{r, warning = F}
+env <- meco_dat$sample_table %>% dplyr::select(key.vars.cortisol)
+
+#env <- meco_dat$sample_table %>% dplyr::select(key.vars.inf)
+#env <- meco_dat$sample_table %>% dplyr::select(key.vars)
+
+t1 <- trans_env$new(dataset = meco_dat, add_data = env)
+
+```
+
+## Genus vs cortisol measures
+
+```{r, warning = F}
+# 'p_adjust_type = "Env"' means p adjustment is performed for each environmental variable separately.
+t1$cal_cor(use_data = "Genus", p_adjust_method = "fdr", p_adjust_type = "Env")
+```
+
+Then, we can plot the correlation results using plot_cor function.
+
+```{r, warning = F}
+# default ggplot2 method with clustering
+t1$plot_cor(cluster_ggplot = "both")
+```
+
+There are too many genera. We can use the filter_feature parameter in plot_cor to filter some taxa that do not have any significance < 0.001.
+
+```{r, warning = F,eval=F}
+# filter genera that donot have at least one ** or ***
+t1$plot_cor(filter_feature = c(""),cluster_ggplot = "both")
+```
+
+### Split by time point
+
+```{r, warning = F}
+# 'p_adjust_type = "Env"' means p adjustment is performed for each environmental variable separately.
+t1$cal_cor(use_data = "Genus", p_adjust_method = "fdr", p_adjust_type = "Env",by_group = "Day")
+```
+
+There are too many genera. We can use the filter_feature parameter in plot_cor to filter some taxa that do not have any significance < 0.001.
+
+```{r, warning = F}
+# filter genera that donot have at least one ** or ***
+t1$plot_cor(filter_feature = c(""),cluster_ggplot = "both",pheatmap = FALSE)
+pearson.cortisol.day <- t1$plot_cor(filter_feature = c(""),cluster_ggplot = "both",pheatmap = FALSE) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Sometimes, if the user wants to do the correlation analysis between the environmental factors and some important taxa detected in the biomarker analysis, please use other_taxa parameter in cal_cor function.
+
+```{r, warning = F}
+# first create trans_diff object as a demonstration
+t2 <- trans_diff$new(dataset = meco_dat, method = "rf", group = "Stress_group", taxa_level = "Genus",p_adjust_method = "none")
+# then create trans_env object
+t1 <- trans_env$new(dataset = meco_dat, add_data = env)
+# use other_taxa to select taxa you need
+t1$cal_cor(use_data = "other", p_adjust_method = "fdr", other_taxa = t2$res_diff$Taxa)
+t1$plot_cor()
+```
+
+The pheatmap method is also available. Note that, besides the color_vector parameter, color_palette can also be used to control color palette with customized colors.
+
+```{r, warning = F}
+# clustering heatmap; require pheatmap package
+# Let's take another color pallete
+t1$plot_cor(pheatmap = TRUE, color_palette = rev(RColorBrewer::brewer.pal(n = 9, name = "RdYlBu")))
+```
+
+Sometimes, if it is needed to study the correlations between environmental variables and taxa for different groups, by_group parameter can be used for this goal.
+
+```{r, warning = F}
+# calculate correlations for different groups using parameter by_group
+t1$cal_cor(by_group = "Timepoint",  p_adjust_method = "fdr")
+# return t1$res_cor
+t1$plot_cor(filter_feature = c("", "*")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+```
+
+# Functional predictions
+
+Ecological researchers are usually interested in the the funtional profiles of microbial communities, because functional or metabolic data is powerful to explain the structure and dynamics of microbial communities. As metagenomic sequencing is complicated and expensive, using amplicon sequencing data to predict functional profiles is an alternative choice. Several software are often used for this goal, such as PICRUSt (Langille et al. 2013), Tax4Fun (Aßhauer et al. 2015) and FAPROTAX (Stilianos Louca et al. 2016; S. Louca, Parfrey, and Doebeli 2016). These tools are great to be used for the prediction of functional profiles based on the prokaryotic communities from sequencing results. In addition, it is also important to obtain the traits or functions for each taxa, not just the whole profile of communities. FAPROTAX database is a collection of the traits and functions of prokaryotes based on the known research results published in books and literatures. We match the taxonomic information of prokaryotes against this database to predict the traits of prokaryotes on biogeochemical roles. The NJC19 database (Lim et al. 2020) is also available for animal-associated prokaryotic data, such as human gut microbiota. We also implement the FUNGuild (Nguyen et al. 2016) and FungalTraits (Põlme et al. 2020) databases to predict the fungal traits. The idea identifying prokaryotic traits and functional redundancy was initially inspired by our another study (Liu et al. 2022).
+
+We first identify/predict traits of taxa with the prokaryotic example data.
+
+```{r, warning = F}
+# create object of trans_func
+t2 <- trans_func$new(meco_dat)
+# mapping the taxonomy to the database
+# this can recognize prokaryotes or fungi automatically if the names of taxonomic levels are standard.
+# for fungi example, see https://chiliubio.github.io/microeco_tutorial/other-dataset.html#fungi-data
+# default database for prokaryotes is FAPROTAX database
+t2$cal_spe_func(prok_database = "FAPROTAX")
+```
+
+The percentages of the OTUs having the same trait can reflect the functional redundancy of this function in the community.
+
+```{r, warning = F}
+# calculate the percentages for communities
+# here do not consider the abundance
+t2$cal_spe_func_perc(abundance_weighted = FALSE)
+```
+
+Then we also take an example to show the percentages of the OTUs for each trait in network modules.
+
+```{r, warning = F}
+# construct a network for the example
+network <- trans_network$new(dataset = meco_dat, cal_cor = "base", taxa_level = "OTU", filter_thres = 0.0001, cor_method = "spearman")
+network$cal_network(p_thres = 0.01, COR_cut = 0.7)
+network$cal_module()
+# convert module info to microtable object
+meco_module <- network$trans_comm(use_col = "module")
+meco_module_func <- trans_func$new(meco_module)
+meco_module_func$cal_spe_func(prok_database = "FAPROTAX")
+meco_module_func$cal_spe_func_perc(abundance_weighted = FALSE)
+meco_module_func$plot_spe_func_perc(order_x = paste0("M", 1:10))
+```
+
+# Environmental factors vs functional predictions
+
+```{r, warning = F, message=F}
+# then we try to correlate the res_spe_func_perc of communities to environmental variables
+t3 <- trans_env$new(dataset = meco_dat, add_data = env)
+t3$cal_cor(add_abund_table = t2$res_spe_func_perc, cor_method = "spearman")
+t3$plot_cor(pheatmap = TRUE
+            #filter_feature = c("")
+            )
+```
+
+# Arrange figures
+
+## Figure 3 - Barplots, alpha,beta div and differential abundance by stress groups
+
+```{r, eval = T, include = T, echo = F, message = F, fig.width=10, fig.height=8, fig.fullwidth = TRUE,warning=FALSE}
+library(cowplot)
+
+A <- barplot.all.samples+theme(legend.position = "none")
+
+BC <-  plot_grid(barplot.group+theme(legend.position = "none"),barplot.stress.time.genus+theme(legend.position = "none"),
+                 nrow = 1,
+                 labels = c("B","C"),
+                 label_size = 25,
+                 hjust = 0.3,vjust = 1,
+                 rel_widths = c(1,1.2)
+                 )
+
+ABC <- plot_grid(A,BC,
+                 nrow =2,
+    labels = c("A",""),label_size = 25, hjust = 0.3,vjust = 1,
+    rel_heights = c(1,1.2))
+
+DE <-  plot_grid(alpha.group+theme(legend.position = "none"),
+                 beta.stress,
+          nrow = 1,
+          labels = c("D","E"),
+          label_size = 25,
+          hjust = 0.3,
+          vjust = 1,
+          rel_heights = c(1,1),
+          rel_widths = c(1,1)
+          )
+
+FG <- plot_grid(rabu.group+theme(legend.position = "right"),
+                deseq2.log2fold.box,
+                nrow = 1,
+                labels = c("F","G"),
+                label_size = 25,
+                hjust = 0.3,vjust = 1
+)
+
+plot_grid(
+  plot_grid( #For shared legend
+    ABC,legend.barplot.all,nrow=1,rel_widths = c(6,1)
+    ),
+  DE,
+  FG,
+  nrow=3,
+  rel_heights = c(1.8,1,1.1)
+)  +
+  theme(plot.margin = unit(c(0,0,0,0.5), "cm")) 
+
+ggsave("Figures/Figure 3.pdf",width = 25, height = 27, units = "cm", dpi = 400) 
+
+ggsave("Figures/Figure 3.tiff",width = 25, height = 27, units = "cm", dpi = 400, compression = "lzw") 
+```
+
+## Figure S1 - Barplots, alpha beta div by timepoints
+
+```{r, eval = T, include = T, echo = F, message = F, fig.width=10, fig.height=8, fig.fullwidth = TRUE}
+library(cowplot)
+
+BC <-  plot_grid(barplot.days,alpha.days,
+                 nrow = 1,
+                 labels = c("B","C"),
+                 label_size = 25,
+                 hjust = 0.3,vjust = 1,
+                 rel_widths = c(1,1.2)
+                 )
+
+DE <-  plot_grid(beta.days+theme(legend.position = "none"),beta.stress.day,
+                 nrow = 1,
+                 labels = c("D","E"),
+                 label_size = 25,
+                 hjust = 0.3,vjust = 1,
+                 rel_widths = c(1,1.2)
+                 )
+
+plot_grid(barplot.all.phylum,BC,DE,
+                 nrow =3,
+    labels = c("A","",""),label_size = 25, hjust = 0.3,vjust = 1,
+    rel_heights = c(1,1,1.2)) +
+  theme(plot.margin = unit(c(0,0,0,0.5), "cm")) 
+
+ggsave("Figures/Figure S1.pdf",width = 25, height = 28, units = "cm", dpi = 400) 
+
+ggsave("Figures/Figure S1.tiff",width = 25, height = 28, units = "cm", dpi = 400, compression = "lzw") 
+```
+
+## Figure S2 - Relative abundance by stress group by time point 
+
+```{r, eval = T, include = T, echo = F, message = F, fig.width=10, fig.height=8, fig.fullwidth = TRUE}
+ plot_grid(rabu.group.time,
+          nrow = 1,
+          labels = c(""),
+          label_size = 25, hjust = 0.3,vjust = 1,
+          rel_heights = c(1.2,2),
+          rel_widths = c(1,1)
+          ) +
+  theme(plot.margin = unit(c(0,0,0,0.5), "cm")) 
+
+ggsave("Figures/Figure S2.pdf",width = 25, height = 10, units = "cm", dpi = 400) 
+
+ggsave("Figures/Figure S2.tiff",width = 25, height = 10, units = "cm", dpi = 400, compression = "lzw") 
+
+```
+
+## Figure 3 - Microbial interactions - run in "AMS_MicroEcoAnalyis.Rmd"
+
+Outputs saved, and figure manually arranged in Powerpoint
+
+## Figure S3 - Infant outcomes effect size
+
+```{r, eval = T, include = T, echo = F, message = F}
+plot_grid(
+  plot_grid(fancy.anova.bar.inf+theme(legend.position = "none",plot.margin = unit(c(0,0.1,0,0), "cm"))+ggtitle(""),NULL,fancy.anova.bar.cort,nrow=3,rel_heights = c(1.2,0.1,1),labels = c("A","","B"),label_size = 25, hjust = 0.3,vjust = 1),
+  NULL,
+          pearson.cortisol.day,
+          nrow = 1,
+          labels = c("","C"),
+          label_size = 25, hjust = 0.3,vjust = 1,
+          rel_widths = c(1,0.1,1)
+          ) +
+  theme(plot.margin = unit(c(0,0,0.5,0.5), "cm"))
+
+ggsave("Figures/Figure S3.pdf",width = 25, height = 15, units = "cm", dpi = 400) 
+
+ggsave("Figures/Figure S3.tiff",width = 25, height = 15, units = "cm", dpi = 400, compression = "lzw") 
+```
+
+## Figure 5 - Clinical factors and microbiome composition
+
+```{r, eval = T, include = T, echo = F, message = F}
+plot_grid(fancy.anova.bar.mother+theme(legend.position = "none"),
+          rda.group+theme(legend.position = "top"),
+          nrow = 1,
+          labels = c("A","B"),
+          label_size = 25, hjust = 0.3,vjust = 1,
+          rel_heights = c(1.2,2),
+          rel_widths = c(1,1.6)
+          ) +
+  theme(plot.margin = unit(c(0,0,0.5,0.2), "cm"))
+
+ggsave("Figures/Figure 5.pdf",width = 25, height = 10, units = "cm", dpi = 400) 
+
+ggsave("Figures/Figure 5.tiff",width = 25, height = 10, units = "cm", dpi = 400, compression = "lzw") 
+```
+
+# Session info
+
+```{r, eval = T, include = T, echo = F}
+sessionInfo()
+```
+
+
